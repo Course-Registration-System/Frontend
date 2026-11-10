@@ -10,6 +10,7 @@
 | 프레임워크 | React 19 |
 | 빌드/개발 서버 | Vite 8 |
 | 린트 | oxlint |
+| 포맷터 | Prettier |
 
 ## 실행 방법
 
@@ -31,8 +32,11 @@
 ```bash
 npm run build     # 프로덕션 빌드 (dist/)
 npm run lint      # 린트
+npm run format    # 코드 포맷 (Prettier). PR 올리기 전에 한 번
 npm run preview   # 빌드 결과 미리보기
 ```
+
+CI 에서 `npm run format:check` 가 돌아 포맷이 어긋나면 실패합니다. VS Code 는 Prettier 확장을 설치하고 "Format on Save" 를 켜면 저장할 때 자동 적용됩니다.
 
 ## 폴더 구조 (예정)
 
