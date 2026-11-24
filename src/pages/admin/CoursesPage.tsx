@@ -1,39 +1,67 @@
-// ACA-02 과목 관리 (과목코드 수정 불가, 삭제 없음)
+// ACA-02 과목 관리: 등록·수정, 선수과목 지정 (삭제 없음)
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { adminApi } from '../../api'
 import { errorMessage } from '../../api/client'
 import { useToast } from '../../components/Toast'
-import { Badge, Empty, ErrorBox, Field, Loading, Modal, PageHeader } from '../../components/ui'
+import {
+  Badge,
+  DeptSelect,
+  Empty,
+  ErrorBox,
+  Field,
+  Loading,
+  Modal,
+  PageHeader,
+} from '../../components/ui'
 import { useAsync } from '../../hooks/useAsync'
-import { CATEGORIES, DEPARTMENTS } from '../../lib/format'
-import { LETTERS } from '../../lib/grades'
-import type { Category, Course, GradingType, LetterGrade } from '../../types'
+import { CMPL_TYPES, cmplLabel, EVAL_TYPE_LABEL, MIN_GRADES, YR_LVLS } from '../../lib/format'
+import type {
+  CmplType,
+  CourseResponse,
+  EvalType,
+  MinGrade,
+  PrerequisiteResponse,
+} from '../../types'
 
-const EMPTY: Course = {
-  code: '',
-  name: '',
-  credits: 3,
-  category: '전공선택',
-  deptName: DEPARTMENTS[0],
-  targetGrade: 1,
-  gradingType: 'GRADE',
+interface CourseForm {
+  crsCd: string
+  crsNm: string
+  deptNo: number | null
+  crdt: number
+  cmplType: CmplType
+  evalType: EvalType
+  rcmdYrLvl: number | null
+  prerequisites: PrerequisiteResponse[]
+}
+
+const EMPTY: CourseForm = {
+  crsCd: '',
+  crsNm: '',
+  deptNo: null,
+  crdt: 3,
+  cmplType: 'MAJOR_ELEC',
+  evalType: 'GRADE',
+  rcmdYrLvl: null,
   prerequisites: [],
 }
+
+const samePrereqs = (a: PrerequisiteResponse[], b: PrerequisiteResponse[]) =>
+  a.length === b.length &&
+  a.every((p) => b.some((q) => q.prereqCrsCd === p.prereqCrsCd && q.minReqGrd === p.minReqGrd))
 
 export default function CoursesPage() {
   const { data, error, loading, reload } = useAsync(() => adminApi.courses(), [])
   const [keyword, setKeyword] = useState('')
-  const [editing, setEditing] = useState<{ mode: 'new' | 'edit'; course: Course } | null>(null)
+  const [editing, setEditing] = useState<{ mode: 'new' | 'edit'; course: CourseForm } | null>(null)
   const list = (data ?? []).filter(
-    (c) => !keyword || c.code.includes(keyword) || c.name.includes(keyword),
+    (c) => !keyword || c.crsCd.includes(keyword) || c.crsNm.includes(keyword),
   )
 
   return (
     <>
       <PageHeader
         title="과목 관리"
-        desc="과목과 선수과목을 등록합니다. 과목코드는 등록 후 바꿀 수 없고, 과목은 삭제하지 않습니다."
         actions={
           <button
             className="btn btn-primary"
@@ -63,26 +91,28 @@ export default function CoursesPage() {
                   <th>과목명</th>
                   <th className="num">학점</th>
                   <th>이수구분</th>
-                  <th>개설학과</th>
-                  <th className="num">학년</th>
-                  <th>평가</th>
+                  <th>학과</th>
+                  <th className="num">권장학년</th>
+                  <th>평가방식</th>
                   <th>선수과목</th>
                   <th />
                 </tr>
               </thead>
               <tbody>
                 {list.map((c) => (
-                  <tr key={c.code}>
-                    <td className="mono">{c.code}</td>
-                    <td>{c.name}</td>
-                    <td className="num">{c.credits}</td>
-                    <td>{c.category}</td>
-                    <td>{c.deptName}</td>
-                    <td className="num">{c.targetGrade}</td>
-                    <td>{c.gradingType === 'PF' ? <Badge>P/F</Badge> : '등급'}</td>
+                  <tr key={c.crsCd}>
+                    <td className="mono">{c.crsCd}</td>
+                    <td>{c.crsNm}</td>
+                    <td className="num">{c.crdt}</td>
+                    <td>{cmplLabel(c.cmplType)}</td>
+                    <td>{c.deptNm}</td>
+                    <td className="num">{c.rcmdYrLvl ?? '-'}</td>
+                    <td>
+                      {c.evalType === 'PASS_FAIL' ? <Badge>P/F</Badge> : EVAL_TYPE_LABEL.GRADE}
+                    </td>
                     <td className="small">
                       {c.prerequisites
-                        .map((p) => `${p.courseName ?? p.courseCode} (${p.minGrade} 이상)`)
+                        .map((p) => `${p.prereqCrsNm} (${p.minReqGrd} 이상)`)
                         .join(', ') || '-'}
                     </td>
                     <td className="row-actions">
@@ -123,29 +153,49 @@ function CourseModal({
   onSaved,
 }: {
   mode: 'new' | 'edit'
-  initial: Course
-  courses: Course[]
+  initial: CourseForm
+  courses: CourseResponse[]
   onClose: () => void
   onSaved: () => void
 }) {
   const toast = useToast()
-  const [f, setF] = useState<Course>(initial)
+  const [f, setF] = useState<CourseForm>(initial)
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const set = <K extends keyof Course>(k: K, v: Course[K]) => setF((x) => ({ ...x, [k]: v }))
+  const set = <K extends keyof CourseForm>(k: K, v: CourseForm[K]) =>
+    setF((x) => ({ ...x, [k]: v }))
   const candidates = courses.filter(
-    (c) => c.code !== f.code && !f.prerequisites.some((p) => p.courseCode === c.code),
+    (c) => c.crsCd !== f.crsCd && !f.prerequisites.some((p) => p.prereqCrsCd === c.crsCd),
   )
   const [preCode, setPreCode] = useState('')
-  const [preGrade, setPreGrade] = useState<LetterGrade>('C0')
+  // 최소취득등급 기본값은 D-
+  const [preGrade, setPreGrade] = useState<MinGrade>('D-')
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     setBusy(true)
     setErr(null)
+    const body = {
+      crsNm: f.crsNm,
+      deptNo: f.deptNo as number,
+      crdt: f.crdt,
+      cmplType: f.cmplType,
+      evalType: f.evalType,
+      rcmdYrLvl: f.rcmdYrLvl,
+    }
+    const prerequisites = f.prerequisites.map(({ prereqCrsCd, minReqGrd }) => ({
+      prereqCrsCd,
+      minReqGrd,
+    }))
     try {
-      if (mode === 'new') await adminApi.createCourse(f)
-      else await adminApi.updateCourse(f)
+      if (mode === 'new') {
+        await adminApi.createCourse({ ...body, crsCd: f.crsCd, prerequisites })
+      } else {
+        // 과목 정보와 선수과목은 API 가 따로다. 선수과목은 바뀐 경우에만 통째로 교체한다
+        await adminApi.updateCourse(f.crsCd, body)
+        if (!samePrereqs(f.prerequisites, initial.prerequisites))
+          await adminApi.replacePrerequisites(f.crsCd, prerequisites)
+      }
       toast('저장했습니다.')
       onSaved()
     } catch (e) {
@@ -172,68 +222,62 @@ function CourseModal({
       }
     >
       <form id="course-form" className="form-grid" onSubmit={submit}>
-        <Field label="과목코드" hint={mode === 'edit' ? '등록 후 바꿀 수 없습니다.' : undefined}>
+        <Field label="과목코드" hint={mode === 'edit' ? '등록 후 바꿀 수 없습니다.' : '숫자 7자리'}>
           <input
-            value={f.code}
+            value={f.crsCd}
+            inputMode="numeric"
             disabled={mode === 'edit'}
-            onChange={(e) => set('code', e.target.value.toUpperCase())}
-            required
+            onChange={(e) => set('crsCd', e.target.value)}
           />
         </Field>
         <Field label="과목명">
-          <input value={f.name} onChange={(e) => set('name', e.target.value)} required />
+          <input value={f.crsNm} onChange={(e) => set('crsNm', e.target.value)} />
         </Field>
-        <Field label="학점">
+        <Field label="학점" hint="0.5 ~ 4, 0.5 단위">
           <input
             type="number"
-            min={0}
-            max={6}
-            value={f.credits}
-            onChange={(e) => set('credits', Number(e.target.value))}
+            step={0.5}
+            value={f.crdt}
+            onChange={(e) => set('crdt', Number(e.target.value))}
           />
         </Field>
         <Field label="이수구분">
-          <select value={f.category} onChange={(e) => set('category', e.target.value as Category)}>
-            {CATEGORIES.map((c) => (
-              <option key={c}>{c}</option>
+          <select value={f.cmplType} onChange={(e) => set('cmplType', e.target.value as CmplType)}>
+            {CMPL_TYPES.map((c) => (
+              <option key={c} value={c}>
+                {cmplLabel(c)}
+              </option>
             ))}
           </select>
         </Field>
-        <Field label="개설학과">
-          <select value={f.deptName} onChange={(e) => set('deptName', e.target.value)}>
-            {DEPARTMENTS.map((d) => (
-              <option key={d}>{d}</option>
-            ))}
-          </select>
+        <Field label="학과">
+          <DeptSelect value={f.deptNo} onChange={(v) => set('deptNo', v)} />
         </Field>
-        <Field label="권장 학년">
+        <Field label="권장학년">
           <select
-            value={f.targetGrade}
-            onChange={(e) => set('targetGrade', Number(e.target.value))}
+            value={f.rcmdYrLvl ?? ''}
+            onChange={(e) => set('rcmdYrLvl', e.target.value ? Number(e.target.value) : null)}
           >
-            {[1, 2, 3, 4].map((g) => (
+            <option value="">없음</option>
+            {YR_LVLS.map((g) => (
               <option key={g} value={g}>
                 {g}학년
               </option>
             ))}
           </select>
         </Field>
-        <Field label="평가 방식">
-          <select
-            value={f.gradingType}
-            onChange={(e) => set('gradingType', e.target.value as GradingType)}
-          >
-            <option value="GRADE">등급제</option>
-            <option value="PF">P/F</option>
+        <Field label="평가방식">
+          <select value={f.evalType} onChange={(e) => set('evalType', e.target.value as EvalType)}>
+            <option value="GRADE">{EVAL_TYPE_LABEL.GRADE}</option>
+            <option value="PASS_FAIL">{EVAL_TYPE_LABEL.PASS_FAIL}</option>
           </select>
         </Field>
         <div className="span-2">
           <span className="field-label">선수과목 · 최소취득등급</span>
           <ul className="chips-list">
             {f.prerequisites.map((p) => (
-              <li key={p.courseCode} className="chip on">
-                {courses.find((c) => c.code === p.courseCode)?.name ?? p.courseCode} ({p.minGrade}{' '}
-                이상)
+              <li key={p.prereqCrsCd} className="chip on">
+                {p.prereqCrsNm} ({p.minReqGrd} 이상)
                 <button
                   type="button"
                   className="btn-icon"
@@ -241,7 +285,7 @@ function CourseModal({
                   onClick={() =>
                     set(
                       'prerequisites',
-                      f.prerequisites.filter((x) => x.courseCode !== p.courseCode),
+                      f.prerequisites.filter((x) => x.prereqCrsCd !== p.prereqCrsCd),
                     )
                   }
                 >
@@ -255,13 +299,13 @@ function CourseModal({
             <select value={preCode} onChange={(e) => setPreCode(e.target.value)}>
               <option value="">과목 선택</option>
               {candidates.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.code} {c.name}
+                <option key={c.crsCd} value={c.crsCd}>
+                  {c.crsCd} {c.crsNm}
                 </option>
               ))}
             </select>
-            <select value={preGrade} onChange={(e) => setPreGrade(e.target.value as LetterGrade)}>
-              {LETTERS.filter((l) => l !== 'F').map((l) => (
+            <select value={preGrade} onChange={(e) => setPreGrade(e.target.value as MinGrade)}>
+              {MIN_GRADES.map((l) => (
                 <option key={l}>{l}</option>
               ))}
             </select>
@@ -270,9 +314,10 @@ function CourseModal({
               className="btn"
               disabled={!preCode}
               onClick={() => {
+                const c = courses.find((x) => x.crsCd === preCode)
                 set('prerequisites', [
                   ...f.prerequisites,
-                  { courseCode: preCode, minGrade: preGrade },
+                  { prereqCrsCd: preCode, prereqCrsNm: c?.crsNm ?? preCode, minReqGrd: preGrade },
                 ])
                 setPreCode('')
               }}

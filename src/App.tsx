@@ -1,13 +1,11 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
-import { AuthProvider, homePath, useAuth } from './auth/AuthContext'
+import { AuthProvider } from './auth/AuthContext'
 import { AppLayout, RequireRole } from './components/Layout'
 import { ToastProvider } from './components/Toast'
-import LoginPage from './pages/LoginPage'
+import LandingPage from './pages/LandingPage'
 import NotFoundPage from './pages/NotFoundPage'
 import TimetablePage from './pages/student/TimetablePage'
-import LectureSearchPage from './pages/student/LectureSearchPage'
-import CartPage from './pages/student/CartPage'
-import EnrollmentsPage from './pages/student/EnrollmentsPage'
+import RegistrationPage from './pages/student/RegistrationPage'
 import GradesPage from './pages/student/GradesPage'
 import LectureListPage from './pages/teaching/LectureListPage'
 import LectureDetailLayout from './pages/teaching/LectureDetailLayout'
@@ -24,27 +22,20 @@ import LecturesPage from './pages/admin/LecturesPage'
 import AdminEnrollmentsPage from './pages/admin/EnrollmentsPage'
 import AdminGradesPage from './pages/admin/GradesPage'
 
-function Home() {
-  const { user, loading } = useAuth()
-  if (loading) return null
-  return <Navigate to={user ? homePath(user) : '/login'} replace />
-}
-
 export default function App() {
   return (
     <BrowserRouter>
       <ToastProvider>
         <AuthProvider>
           <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/login" element={<LoginPage />} />
+            {/* 랜딩 + 로그인. 로그인한 상태면 역할별 메인 화면으로 보낸다 */}
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/login" element={<Navigate to="/" replace />} />
 
             <Route element={<RequireRole roles={['STUDENT']} />}>
               <Route element={<AppLayout />}>
+                <Route path="/student/registration" element={<RegistrationPage />} />
                 <Route path="/student/timetable" element={<TimetablePage />} />
-                <Route path="/student/lectures" element={<LectureSearchPage />} />
-                <Route path="/student/cart" element={<CartPage />} />
-                <Route path="/student/enrollments" element={<EnrollmentsPage />} />
                 <Route path="/student/grades" element={<GradesPage />} />
               </Route>
             </Route>

@@ -1,146 +1,181 @@
-// 업무별 API 함수. 경로는 제안이며 백엔드 명세가 나오면 맞춘다.
+// 업무별 API 함수. 경로·메서드·본문은 Backend 컨트롤러와 같다 (API-목록.md 참고).
 import type {
-  AdminEnrollmentStatus,
-  Course,
-  CurrentPeriod,
-  Dashboard,
-  Enrollment,
-  GradeRow,
-  GradeSheet,
-  Lecture,
-  LectureForm,
+  CartResponse,
+  CourseCreateRequest,
+  CourseResponse,
+  CourseUpdateRequest,
+  DashboardResponse,
+  EnrollmentResponse,
+  EnrollmentStatusResponse,
+  GradeInput,
+  GradeReportResponse,
+  GradeSheetResponse,
+  GradeStatusResponse,
+  GrdStat,
+  LectureCreateRequest,
+  LecturePlanResponse,
+  LectureResponse,
   LectureSearchParams,
-  MaxCreditRow,
-  Ratios,
-  RosterStudent,
-  Schedule,
-  Semester,
-  TeachingLectureDetail,
-  Term,
-  Transcript,
-  User,
-  UserForm,
+  LectureSearchResponse,
+  LectureUpdateRequest,
+  LoginResponse,
+  MaxCreditItem,
+  MaxCreditResult,
+  MyInfo,
+  PlanWeights,
+  PrerequisiteRequest,
+  Role,
+  ScheduleRequest,
+  ScheduleResponse,
+  SemesterRequest,
+  SemesterResponse,
+  TeachingAssistantListResponse,
+  TeachingLectureListResponse,
+  TeachingStudentListResponse,
+  TimetableResponse,
+  UserCreateRequest,
+  UserResponse,
+  UserUpdateRequest,
 } from '../types'
-import { request } from './client'
+import { request, requestBlob } from './client'
 
-type Q = Record<string, string | undefined>
-
-// USR-01 로그인
+// USR-01 로그인·비밀번호 변경 (로그아웃 API 는 없다: 토큰만 지운다)
 export const authApi = {
-  login: (userNo: string, password: string) =>
-    request<{ token: string; user: User }>('POST', '/api/auth/login', {
-      body: { userNo, password },
-    }),
-  me: () => request<User>('GET', '/api/auth/me'),
-  logout: () => request<void>('POST', '/api/auth/logout'),
+  login: (usrNo: string, password: string) =>
+    request<LoginResponse>('POST', '/api/auth/login', { body: { usrNo, password } }),
+  me: () => request<MyInfo>('GET', '/api/auth/me'),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<void>('PATCH', '/api/auth/password', { body: { currentPassword, newPassword } }),
 }
 
-// 공통: 학기와 현재 기간
+// 공통 조회
 export const commonApi = {
-  semesters: () => request<Semester[]>('GET', '/api/semesters'),
-  currentPeriod: () => request<CurrentPeriod>('GET', '/api/periods/current'),
+  semesters: () => request<SemesterResponse[]>('GET', '/api/semesters'),
+  schedules: (semNo: number) =>
+    request<ScheduleResponse[]>('GET', `/api/semesters/${semNo}/schedules`),
+  /** 서버(앱) 현재 시각. 시연용 시계를 옮겼으면 그 시각 */
+  health: () => request<{ status: string; time: string }>('GET', '/api/health'),
 }
 
-// REG-01 강의 검색
+// REG-01 강의 검색, LEC-03 계획서 내려받기
 export const lectureApi = {
   search: (params: LectureSearchParams) =>
-    request<Lecture[]>('GET', '/api/lectures', { query: params as Q }),
+    request<LectureSearchResponse>('GET', '/api/lectures', { query: { ...params } }),
+  planFile: (lecNo: number) => requestBlob(`/api/lectures/${lecNo}/plan`),
 }
 
-// REG-02·03·04 학생 수강신청
+// REG-02~04, GRD-03 학생
 export const studentApi = {
-  cart: (semesterId?: string) =>
-    request<Lecture[]>('GET', '/api/me/cart', { query: { semesterId } }),
-  addToCart: (lecNo: number) => request<void>('POST', '/api/me/cart', { body: { lecNo } }),
-  removeFromCart: (lecNo: number) => request<void>('DELETE', `/api/me/cart/${lecNo}`),
-  maxCredits: (semesterId?: string) =>
-    request<{ maxCredits: number | null }>('GET', '/api/me/max-credits', {
-      query: { semesterId },
-    }),
-  enrollments: (semesterId?: string) =>
-    request<Enrollment[]>('GET', '/api/me/enrollments', { query: { semesterId } }),
+  cart: () => request<CartResponse>('GET', '/api/cart'),
+  addToCart: (lecNo: number) => request<CartResponse>('POST', '/api/cart', { body: { lecNo } }),
+  removeFromCart: (lecNo: number) => request<void>('DELETE', `/api/cart/${lecNo}`),
+  enrollments: () => request<EnrollmentResponse[]>('GET', '/api/enrollments'),
   enroll: (lecNo: number) =>
-    request<Enrollment>('POST', '/api/me/enrollments', { body: { lecNo } }),
-  cancel: (enrollmentId: number) => request<void>('DELETE', `/api/me/enrollments/${enrollmentId}`),
-  // GRD-03 성적 조회
-  transcript: (semesterId: string) =>
-    request<Transcript>('GET', '/api/me/grades', { query: { semesterId } }),
-  gradeSemesters: () => request<string[]>('GET', '/api/me/grade-semesters'),
+    request<EnrollmentResponse>('POST', '/api/enrollments', { body: { lecNo } }),
+  cancel: (lecNo: number) => request<void>('DELETE', `/api/enrollments/${lecNo}`),
+  timetable: (semNo?: number) =>
+    request<TimetableResponse>('GET', '/api/me/timetable', { query: { semNo } }),
+  grades: () => request<GradeReportResponse>('GET', '/api/me/grades'),
 }
 
 // LEC-01~04, GRD-01 교수·조교
+const t = (lecNo: number) => `/api/teaching/lectures/${lecNo}`
 export const teachingApi = {
-  lectures: (semesterId?: string) =>
-    request<Lecture[]>('GET', '/api/teaching/lectures', { query: { semesterId } }),
-  detail: (lecNo: number) =>
-    request<TeachingLectureDetail>('GET', `/api/teaching/lectures/${lecNo}`),
-  students: (lecNo: number) =>
-    request<RosterStudent[]>('GET', `/api/teaching/lectures/${lecNo}/students`),
-  uploadSyllabus: (lecNo: number, file: File) => {
+  lectures: (semNo?: number) =>
+    request<TeachingLectureListResponse>('GET', '/api/teaching/lectures', { query: { semNo } }),
+  students: (lecNo: number) => request<TeachingStudentListResponse>('GET', `${t(lecNo)}/students`),
+  plan: (lecNo: number) => request<LecturePlanResponse>('GET', `${t(lecNo)}/plan`),
+  uploadPlan: (lecNo: number, file: File) => {
     const fd = new FormData()
     fd.append('file', file)
-    return request<void>('PUT', `/api/teaching/lectures/${lecNo}/syllabus`, { body: fd })
+    return request<LecturePlanResponse>('PUT', `${t(lecNo)}/plan/file`, { body: fd })
   },
-  saveRatios: (lecNo: number, ratios: Ratios) =>
-    request<void>('PUT', `/api/teaching/lectures/${lecNo}/ratios`, { body: ratios }),
+  saveWeights: (lecNo: number, w: PlanWeights) =>
+    request<LecturePlanResponse>('PUT', `${t(lecNo)}/plan/weights`, { body: w }),
   assistants: (lecNo: number) =>
-    request<RosterStudent[]>('GET', `/api/teaching/lectures/${lecNo}/assistants`),
-  findStudent: (studentNo: string) =>
-    request<RosterStudent>('GET', `/api/teaching/students/${studentNo}`),
-  addAssistant: (lecNo: number, studentNo: string) =>
-    request<void>('POST', `/api/teaching/lectures/${lecNo}/assistants`, { body: { studentNo } }),
-  removeAssistant: (lecNo: number, studentNo: string) =>
-    request<void>('DELETE', `/api/teaching/lectures/${lecNo}/assistants/${studentNo}`),
-  gradeSheet: (lecNo: number) =>
-    request<GradeSheet>('GET', `/api/teaching/lectures/${lecNo}/grades`),
-  saveGrades: (lecNo: number, rows: Pick<GradeRow, 'enrollmentId' | 'scores' | 'pf'>[]) =>
-    request<GradeSheet>('PUT', `/api/teaching/lectures/${lecNo}/grades`, { body: rows }),
-  submitGrades: (lecNo: number) =>
-    request<GradeSheet>('POST', `/api/teaching/lectures/${lecNo}/grades/submit`),
+    request<TeachingAssistantListResponse>('GET', `${t(lecNo)}/assistants`),
+  addAssistant: (lecNo: number, stdNo: string) =>
+    request<TeachingAssistantListResponse>('POST', `${t(lecNo)}/assistants`, {
+      body: { stdNo },
+    }),
+  removeAssistant: (lecNo: number, stdNo: string) =>
+    request<TeachingAssistantListResponse>('DELETE', `${t(lecNo)}/assistants/${stdNo}`),
+  gradeSheet: (lecNo: number) => request<GradeSheetResponse>('GET', `${t(lecNo)}/grades`),
+  saveGrades: (lecNo: number, grades: GradeInput[]) =>
+    request<GradeSheetResponse>('PUT', `${t(lecNo)}/grades`, { body: { grades } }),
+  saveCounts: (lecNo: number, aCnt: number | null, abCnt: number | null) =>
+    request<GradeSheetResponse>('PUT', `${t(lecNo)}/grades/counts`, { body: { aCnt, abCnt } }),
+  submitGrades: (lecNo: number) => request<GradeSheetResponse>('POST', `${t(lecNo)}/grades/submit`),
 }
 
 // 관리자
 export const adminApi = {
   // ACA-04
-  dashboard: (semesterId?: string) =>
-    request<Dashboard>('GET', '/api/admin/dashboard', { query: { semesterId } }),
+  dashboard: (semNo?: number) =>
+    request<DashboardResponse>('GET', '/api/admin/dashboard', { query: { semNo } }),
+
   // USR-02
-  users: (params: { keyword?: string; role?: string }) =>
-    request<User[]>('GET', '/api/admin/users', { query: params }),
-  createUser: (form: UserForm) => request<User>('POST', '/api/admin/users', { body: form }),
-  updateUser: (userNo: string, form: UserForm) =>
-    request<User>('PUT', `/api/admin/users/${userNo}`, { body: form }),
-  deactivateUser: (userNo: string) =>
-    request<void>('POST', `/api/admin/users/${userNo}/deactivate`),
+  users: (params: { role?: Role; keyword?: string }) =>
+    request<UserResponse[]>('GET', '/api/admin/users', { query: params }),
+  createUser: (body: UserCreateRequest) =>
+    request<UserResponse>('POST', '/api/admin/users', { body }),
+  updateUser: (usrNo: string, body: UserUpdateRequest) =>
+    request<UserResponse>('PUT', `/api/admin/users/${usrNo}`, { body }),
+  resetPassword: (usrNo: string, newPassword: string) =>
+    request<void>('PATCH', `/api/admin/users/${usrNo}/password`, { body: { newPassword } }),
+  deactivateUser: (usrNo: string) =>
+    request<UserResponse>('PATCH', `/api/admin/users/${usrNo}/deactivate`),
+
   // ACA-01
-  createSemester: (year: number, term: Term) =>
-    request<Semester>('POST', '/api/admin/semesters', { body: { year, term } }),
-  setCurrentSemester: (id: string) => request<void>('POST', `/api/admin/semesters/${id}/current`),
-  schedules: (id: string) => request<Schedule[]>('GET', `/api/admin/semesters/${id}/schedules`),
-  saveSchedules: (id: string, schedules: Schedule[]) =>
-    request<void>('PUT', `/api/admin/semesters/${id}/schedules`, { body: schedules }),
-  maxCredits: (id: string) =>
-    request<MaxCreditRow[]>('GET', `/api/admin/semesters/${id}/max-credits`),
-  runMaxCredits: (id: string) =>
-    request<MaxCreditRow[]>('POST', `/api/admin/semesters/${id}/max-credits`),
+  createSemester: (body: SemesterRequest) =>
+    request<SemesterResponse>('POST', '/api/admin/semesters', { body }),
+  updateSemester: (semNo: number, body: SemesterRequest) =>
+    request<SemesterResponse>('PUT', `/api/admin/semesters/${semNo}`, { body }),
+  setCurrentSemester: (semNo: number) =>
+    request<SemesterResponse>('PUT', `/api/admin/semesters/${semNo}/current`),
+  addSchedule: (semNo: number, body: ScheduleRequest) =>
+    request<ScheduleResponse>('POST', `/api/admin/semesters/${semNo}/schedules`, { body }),
+  deleteSchedule: (schdNo: number) => request<void>('DELETE', `/api/admin/schedules/${schdNo}`),
+  maxCredits: (semNo: number) =>
+    request<MaxCreditItem[]>('GET', `/api/admin/semesters/${semNo}/max-credits`),
+  /** 진급·졸업 처리 후 최대학점 산정 */
+  runMaxCredits: (semNo: number) =>
+    request<MaxCreditResult>('POST', `/api/admin/semesters/${semNo}/max-credits`),
+
   // ACA-02
-  courses: () => request<Course[]>('GET', '/api/admin/courses'),
-  createCourse: (c: Course) => request<Course>('POST', '/api/admin/courses', { body: c }),
-  updateCourse: (c: Course) => request<Course>('PUT', `/api/admin/courses/${c.code}`, { body: c }),
+  courses: () => request<CourseResponse[]>('GET', '/api/admin/courses'),
+  createCourse: (body: CourseCreateRequest) =>
+    request<CourseResponse>('POST', '/api/admin/courses', { body }),
+  updateCourse: (crsCd: string, body: CourseUpdateRequest) =>
+    request<CourseResponse>('PUT', `/api/admin/courses/${crsCd}`, { body }),
+  replacePrerequisites: (crsCd: string, prerequisites: PrerequisiteRequest[]) =>
+    request<CourseResponse>('PUT', `/api/admin/courses/${crsCd}/prerequisites`, {
+      body: { prerequisites },
+    }),
+
   // ACA-03
-  lectures: (semesterId?: string) =>
-    request<Lecture[]>('GET', '/api/admin/lectures', { query: { semesterId } }),
-  createLecture: (f: LectureForm) => request<Lecture>('POST', '/api/admin/lectures', { body: f }),
-  updateLecture: (lecNo: number, f: LectureForm) =>
-    request<Lecture>('PUT', `/api/admin/lectures/${lecNo}`, { body: f }),
-  closeLecture: (lecNo: number) => request<void>('POST', `/api/admin/lectures/${lecNo}/close`),
+  lectures: (semNo: number) =>
+    request<LectureResponse[]>('GET', '/api/admin/lectures', { query: { semNo } }),
+  createLecture: (body: LectureCreateRequest) =>
+    request<LectureResponse>('POST', '/api/admin/lectures', { body }),
+  updateLecture: (lecNo: number, body: LectureUpdateRequest) =>
+    request<LectureResponse>('PUT', `/api/admin/lectures/${lecNo}`, { body }),
+  closeLecture: (lecNo: number) =>
+    request<LectureResponse>('PATCH', `/api/admin/lectures/${lecNo}/close`),
+
   // REG-05
   enrollmentStatus: (lecNo: number) =>
-    request<AdminEnrollmentStatus>('GET', `/api/admin/lectures/${lecNo}/enrollments`),
-  forceEnroll: (lecNo: number, studentNo: string) =>
-    request<void>('POST', `/api/admin/lectures/${lecNo}/enrollments`, { body: { studentNo } }),
-  forceCancel: (enrollmentId: number) =>
-    request<void>('DELETE', `/api/admin/enrollments/${enrollmentId}`),
-  // GRD-02
-  confirmGrades: (lecNo: number) => request<void>('POST', `/api/admin/grades/${lecNo}/confirm`),
+    request<EnrollmentStatusResponse>('GET', `/api/admin/lectures/${lecNo}/enrollments`),
+  addEnrollment: (lecNo: number, stdNo: string) =>
+    request<EnrollmentStatusResponse>('POST', `/api/admin/lectures/${lecNo}/enrollments`, {
+      body: { stdNo },
+    }),
+  cancelEnrollment: (lecNo: number, stdNo: string) =>
+    request<void>('DELETE', `/api/admin/lectures/${lecNo}/enrollments/${stdNo}`),
+
+  // GRD-02 (feat/grade-confirm 브랜치, 아직 main 에 없음)
+  gradeStatus: (semNo?: number, grdStat?: GrdStat) =>
+    request<GradeStatusResponse>('GET', '/api/admin/grades', { query: { semNo, grdStat } }),
+  confirmGrades: (lecNos: number[]) =>
+    request<unknown>('POST', '/api/admin/grades/confirm', { body: { lecNos } }),
 }

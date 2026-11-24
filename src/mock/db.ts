@@ -1,439 +1,352 @@
-// 목 서버용 인메모리 DB와 시드 데이터. 백엔드 연동 후에는 쓰지 않는다.
+// 개발용 목 데이터. `npm run dev:mock` 일 때만 쓰이고 실제 빌드에는 포함되지 않는다.
+// 계정 번호와 비밀번호(test1234!)는 백엔드 개발 시드와 맞췄다.
 import type {
-  Course,
-  GradeStatus,
-  LectureStatus,
-  LectureTime,
-  LetterGrade,
-  MaxCreditRow,
-  Ratios,
-  Schedule,
-  Scores,
-  Semester,
-  User,
+  CourseResponse,
+  MaxCreditItem,
+  PlanWeights,
+  ProcType,
+  ScheduleResponse,
+  SemesterResponse,
+  TimeSlotRequest,
+  UserResponse,
+  GrdStat,
+  LecStat,
 } from '../types'
 
-export interface DbUser extends User {
-  password: string
-}
+export const DB_VERSION = 2
+export const PASSWORD = 'test1234!'
+
+export type DbUser = UserResponse & { password: string }
 
 export interface DbLecture {
   lecNo: number
-  semesterId: string
-  courseCode: string
-  section: string
-  professorNo: string
-  capacity: number
-  isEnglish: boolean
-  excludeRelative: boolean
-  times: LectureTime[]
-  status: LectureStatus
-  gradeStatus: GradeStatus
-  syllabusUrl: string | null
-  ratios: Ratios | null
+  crsCd: string
+  semNo: number
+  profNo: string
+  sectNo: number
+  cap: number
+  lecStat: LecStat
+  engLec: boolean
+  relGrdExmp: boolean
+  timeSlots: TimeSlotRequest[]
+  grdStat: GrdStat
+  hasPlan: boolean
+  weights: PlanWeights | null
   assistants: string[]
+  aCnt: number | null
+  abCnt: number | null
+  cnfmDtm: string | null
 }
 
 export interface DbEnrollment {
-  id: number
-  studentNo: string
+  stdNo: string
   lecNo: number
-  status: 'ENROLLED' | 'CANCELLED'
-  isRetake: boolean
-  scores: Scores
-  pf: 'P' | 'F' | null
-  letter: LetterGrade | null
+  enrlDtm: string
+  retake: boolean
+  procType: ProcType
+  midScr: number | null
+  finScr: number | null
+  hwScr: number | null
+  attScr: number | null
 }
 
 export interface Db {
   version: number
-  today: string
-  seq: number
   users: DbUser[]
-  semesters: Semester[]
-  schedules: Record<string, Schedule[]>
-  courses: Course[]
+  semesters: SemesterResponse[]
+  schedules: ScheduleResponse[]
+  maxCredits: Record<number, MaxCreditItem[]>
+  courses: CourseResponse[]
   lectures: DbLecture[]
-  cart: { studentNo: string; lecNo: number }[]
   enrollments: DbEnrollment[]
-  maxCredits: Record<string, MaxCreditRow[]>
+  cart: { stdNo: string; lecNo: number; addedAt: string }[]
+  seq: number
 }
 
-export const DB_VERSION = 1
-export const SAMPLE_PDF = '/sample-syllabus.pdf'
+/** LocalDateTime 형식, 오늘 기준 days 일 뒤 */
+const at = (days: number, hm: string) => {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${hm}:00`
+}
 
-const EMPTY_SCORES: Scores = { midterm: null, final: null, assignment: null, attendance: null }
+const slot = (
+  dow: TimeSlotRequest['dow'],
+  startTm: string,
+  endTm: string,
+  roomCd: string | null,
+  clsType: TimeSlotRequest['clsType'] = 'OFFLINE',
+): TimeSlotRequest => ({ dow, startTm, endTm, clsType, roomCd })
 
-const t = (day: LectureTime['day'], s: number, e: number, room: string): LectureTime => ({
-  day,
-  startPeriod: s,
-  endPeriod: e,
-  room,
+const DEPT: Record<number, string> = { 101: '컴퓨터학부', 102: '경영학부', 103: '교양교육원' }
+
+const user = (
+  usrNo: string,
+  usrNm: string,
+  role: UserResponse['role'],
+  deptNo: number,
+  extra: Partial<DbUser> = {},
+): DbUser => ({
+  usrNo,
+  usrNm,
+  email: `${usrNo}@example.ac.kr`,
+  role,
+  acctStat: 'ACTIVE',
+  deptNo,
+  deptNm: DEPT[deptNo],
+  yrLvl: null,
+  stdStat: null,
+  office: null,
+  password: PASSWORD,
+  ...extra,
+})
+const student = (no: string, nm: string, deptNo: number, yrLvl: number, stdStat = 'ATTENDING') =>
+  user(no, nm, 'STUDENT', deptNo, { yrLvl, stdStat: stdStat as DbUser['stdStat'] })
+
+const W: PlanWeights = { midWt: 30, finWt: 40, hwWt: 20, attWt: 10 }
+
+const course = (
+  crsCd: string,
+  crsNm: string,
+  deptNo: number,
+  crdt: number,
+  cmplType: CourseResponse['cmplType'],
+  rcmdYrLvl: number | null,
+  extra: Partial<CourseResponse> = {},
+): CourseResponse => ({
+  crsCd,
+  crsNm,
+  deptNo,
+  deptNm: DEPT[deptNo],
+  crdt,
+  cmplType,
+  evalType: 'GRADE',
+  rcmdYrLvl,
+  prerequisites: [],
+  ...extra,
 })
 
 export function createSeed(): Db {
-  const users: DbUser[] = [
-    { userNo: 'A0001', name: '관리자', role: 'ADMIN', active: true, password: '1234' },
-    {
-      userNo: 'P1001',
-      name: '김지훈',
-      role: 'PROFESSOR',
-      active: true,
-      deptName: '컴퓨터공학과',
-      email: 'jhkim@univ.ac.kr',
-      password: '1234',
-    },
-    {
-      userNo: 'P1002',
-      name: '이수진',
-      role: 'PROFESSOR',
-      active: true,
-      deptName: '컴퓨터공학과',
-      email: 'sjlee@univ.ac.kr',
-      password: '1234',
-    },
-    {
-      userNo: 'P1003',
-      name: '박성호',
-      role: 'PROFESSOR',
-      active: true,
-      deptName: '경영학과',
-      email: 'shpark@univ.ac.kr',
-      password: '1234',
-    },
-    {
-      userNo: 'P1004',
-      name: '최은영',
-      role: 'PROFESSOR',
-      active: true,
-      deptName: '교양학부',
-      email: 'eychoi@univ.ac.kr',
-      password: '1234',
-    },
-    student('20230001', '홍길동', '컴퓨터공학과', 3),
-    student('20240002', '김철수', '컴퓨터공학과', 2),
-    student('20220003', '이영희', '경영학과', 4),
-    student('20250004', '박민수', '컴퓨터공학과', 1),
-    { ...student('20190099', '정휴학', '경영학과', 4), active: false },
-  ]
-  const extraNames = [
-    '강서준',
-    '윤하은',
-    '장도윤',
-    '임지아',
-    '한시우',
-    '오서연',
-    '서지호',
-    '신하린',
-    '권준우',
-    '황예린',
-    '안건우',
-    '송채원',
-    '전민재',
-    '홍수아',
-    '유태윤',
-    '고은서',
-    '문현우',
-    '양지유',
-    '손우진',
-    '배소율',
-  ]
-  const extras = extraNames.map((name, i) =>
-    student(`2023${String(10 + i).padStart(4, '0')}`, name, '컴퓨터공학과', 3),
-  )
-  users.push(...extras)
-
-  const semesters: Semester[] = [
-    { id: '2025-1', year: 2025, term: '1', current: false },
-    { id: '2025-2', year: 2025, term: '2', current: false },
-    { id: '2026-1', year: 2026, term: '1', current: false },
-    { id: '2026-2', year: 2026, term: '2', current: true },
-  ]
-  const all = [1, 2, 3, 4]
-  const schedules: Record<string, Schedule[]> = {
-    '2026-2': [
-      { type: 'CART', startDate: '2026-08-03', endDate: '2026-08-07', targetGrades: all },
-      { type: 'REGISTER', startDate: '2026-08-10', endDate: '2026-08-14', targetGrades: all },
-      { type: 'ADJUST', startDate: '2026-09-01', endDate: '2026-09-07', targetGrades: all },
-      { type: 'GRADE_INPUT', startDate: '2026-12-14', endDate: '2026-12-24', targetGrades: all },
-    ],
-  }
-
-  const pre = (courseCode: string, minGrade: LetterGrade) => ({ courseCode, minGrade })
-  const courses: Course[] = [
-    course('CSE101', '프로그래밍기초', 3, '전공필수', '컴퓨터공학과', 1),
-    course('CSE201', '자료구조', 3, '전공필수', '컴퓨터공학과', 2, [pre('CSE101', 'C0')]),
-    course('CSE202', '객체지향프로그래밍', 3, '전공선택', '컴퓨터공학과', 2, [pre('CSE101', 'D0')]),
-    course('CSE301', '운영체제', 3, '전공선택', '컴퓨터공학과', 3, [pre('CSE201', 'C0')]),
-    course('CSE302', '데이터베이스', 3, '전공선택', '컴퓨터공학과', 3),
-    course('CSE303', '소프트웨어공학', 3, '전공선택', '컴퓨터공학과', 3),
-    course('CSE401', '캡스톤디자인', 3, '전공필수', '컴퓨터공학과', 4),
-    course('BUS101', '경영학원론', 3, '전공필수', '경영학과', 1),
-    course('BUS301', '마케팅관리', 3, '전공선택', '경영학과', 3),
-    course('GEN101', '대학영어', 2, '교양필수', '교양학부', 1),
-    course('GEN102', '글쓰기와표현', 2, '교양필수', '교양학부', 1),
-    { ...course('GEN201', '사회봉사', 1, '교양선택', '교양학부', 1), gradingType: 'PF' },
-    { ...course('CHP101', '채플', 1, '채플', '교양학부', 1), gradingType: 'PF' },
-  ]
-
-  const R: Ratios = { midterm: 30, final: 40, assignment: 20, attendance: 10 }
-  const lectures: DbLecture[] = [
-    // 2026-2 (현재 학기)
-    lec(
-      101,
-      '2026-2',
-      'CSE201',
-      '01',
-      'P1001',
-      30,
-      [t('MON', 1, 2, '공학관 301'), t('WED', 1, 1, '공학관 301')],
-      { ratios: R, syllabusUrl: SAMPLE_PDF },
-    ),
-    lec(
-      102,
-      '2026-2',
-      'CSE201',
-      '02',
-      'P1002',
-      30,
-      [t('TUE', 3, 4, '공학관 302'), t('THU', 3, 3, '공학관 302')],
-      { ratios: R },
-    ),
-    lec(103, '2026-2', 'CSE301', '01', 'P1001', 40, [
-      t('TUE', 5, 6, '공학관 401'),
-      t('THU', 5, 5, '공학관 401'),
-    ]),
-    lec(
-      104,
-      '2026-2',
-      'CSE302',
-      '01',
-      'P1002',
-      5,
-      [t('WED', 3, 4, '공학관 402'), t('FRI', 3, 3, '공학관 402')],
-      { ratios: R, syllabusUrl: SAMPLE_PDF },
-    ),
-    lec(
-      105,
-      '2026-2',
-      'CSE303',
-      '01',
-      'P1001',
-      35,
-      [t('MON', 5, 6, '공학관 501'), t('WED', 5, 5, '공학관 501')],
-      { ratios: R, isEnglish: true, assistants: ['20230001'], syllabusUrl: SAMPLE_PDF },
-    ),
-    lec(106, '2026-2', 'CSE401', '01', 'P1002', 25, [t('FRI', 5, 7, '공학관 601')], {
-      ratios: R,
-      gradeStatus: 'SUBMITTED',
-      excludeRelative: true,
-    }),
-    lec(
-      107,
-      '2026-2',
-      'CSE202',
-      '01',
-      'P1002',
-      40,
-      [t('MON', 3, 4, '공학관 303'), t('WED', 2, 2, '공학관 303')],
-      { ratios: R },
-    ),
-    lec(108, '2026-2', 'GEN102', '01', 'P1004', 50, [t('MON', 1, 2, '인문관 101')], { ratios: R }),
-    lec(109, '2026-2', 'GEN201', '01', 'P1004', 30, [t('SAT', 1, 3, '인문관 102')], {
-      excludeRelative: true,
-    }),
-    lec(110, '2026-2', 'CHP101', '01', 'P1004', 300, [t('THU', 7, 7, '대강당')], {
-      excludeRelative: true,
-    }),
-    lec(
-      111,
-      '2026-2',
-      'BUS301',
-      '01',
-      'P1003',
-      40,
-      [t('TUE', 1, 2, '경영관 201'), t('THU', 1, 1, '경영관 201')],
-      { ratios: R, gradeStatus: 'IN_PROGRESS' },
-    ),
-    lec(112, '2026-2', 'BUS101', '01', 'P1003', 60, [t('FRI', 1, 2, '경영관 101')], {
-      status: 'CLOSED',
-    }),
-    lec(
-      113,
-      '2026-2',
-      'CSE101',
-      '01',
-      'P1002',
-      60,
-      [t('TUE', 7, 8, '공학관 201'), t('FRI', 1, 1, '공학관 201')],
-      { ratios: R },
-    ),
-    // 지난 학기 (성적 확정)
-    lec(201, '2025-1', 'CSE101', '01', 'P1002', 60, [t('MON', 1, 2, '공학관 201')], {
-      ratios: R,
-      gradeStatus: 'CONFIRMED',
-    }),
-    lec(202, '2025-1', 'GEN101', '01', 'P1004', 50, [t('TUE', 1, 2, '인문관 101')], {
-      ratios: R,
-      gradeStatus: 'CONFIRMED',
-    }),
-    lec(203, '2025-1', 'CHP101', '01', 'P1004', 300, [t('THU', 7, 7, '대강당')], {
-      gradeStatus: 'CONFIRMED',
-    }),
-    lec(204, '2025-2', 'CSE201', '01', 'P1001', 30, [t('MON', 1, 2, '공학관 301')], {
-      ratios: R,
-      gradeStatus: 'CONFIRMED',
-    }),
-    lec(205, '2025-2', 'GEN102', '01', 'P1004', 50, [t('WED', 1, 2, '인문관 101')], {
-      ratios: R,
-      gradeStatus: 'CONFIRMED',
-    }),
-    lec(206, '2026-1', 'CSE202', '01', 'P1002', 40, [t('MON', 3, 4, '공학관 303')], {
-      ratios: R,
-      gradeStatus: 'CONFIRMED',
-    }),
-    lec(207, '2026-1', 'CHP101', '01', 'P1004', 300, [t('THU', 7, 7, '대강당')], {
-      gradeStatus: 'CONFIRMED',
-    }),
-    lec(208, '2026-1', 'GEN201', '01', 'P1004', 30, [t('SAT', 1, 3, '인문관 102')], {
-      gradeStatus: 'CONFIRMED',
-    }),
-  ]
-
-  let id = 1
-  const enrollments: DbEnrollment[] = []
-  const enroll = (studentNo: string, lecNo: number, extra: Partial<DbEnrollment> = {}) =>
-    enrollments.push({
-      id: id++,
-      studentNo,
-      lecNo,
-      status: 'ENROLLED',
-      isRetake: false,
-      scores: { ...EMPTY_SCORES },
-      pf: null,
-      letter: null,
-      ...extra,
-    })
-
-  // 지난 학기 이력
-  const past: [string, number, LetterGrade][] = [
-    ['20230001', 201, 'A0'],
-    ['20230001', 202, 'B+'],
-    ['20230001', 203, 'P'],
-    ['20230001', 204, 'C+'],
-    ['20230001', 205, 'C0'],
-    ['20230001', 206, 'A+'],
-    ['20230001', 207, 'P'],
-    ['20230001', 208, 'P'],
-    ['20240002', 201, 'B0'],
-    ['20240002', 202, 'C0'],
-    ['20240002', 205, 'A0'],
-    ['20240002', 206, 'F'],
-    ['20220003', 202, 'A+'],
-    ['20220003', 205, 'B+'],
-  ]
-  for (const [s, l, letter] of past) enroll(s, l, { letter, pf: letter === 'P' ? 'P' : null })
-
-  // 현재 학기
-  enroll('20230001', 110)
-  extras.forEach((u, i) => {
-    enroll(u.userNo, 101)
-    if (i < 5) enroll(u.userNo, 104)
-    if (i < 12) enroll(u.userNo, 105)
-    if (i >= 15) {
-      const sc = 70 + i
-      enroll(u.userNo, 106, {
-        scores: { midterm: sc, final: sc - 5, assignment: 90, attendance: 100 },
-      })
-    }
-    if (i < 8)
-      enroll(
-        u.userNo,
-        111,
-        i < 4 ? { scores: { midterm: 80, final: 75, assignment: 85, attendance: 100 } } : {},
-      )
+  const lecture = (
+    lecNo: number,
+    semNo: number,
+    crsCd: string,
+    sectNo: number,
+    profNo: string,
+    cap: number,
+    timeSlots: TimeSlotRequest[],
+    extra: Partial<DbLecture> = {},
+  ): DbLecture => ({
+    lecNo,
+    crsCd,
+    semNo,
+    profNo,
+    sectNo,
+    cap,
+    lecStat: 'OPEN',
+    engLec: false,
+    relGrdExmp: false,
+    timeSlots,
+    grdStat: 'NOT_ENTERED',
+    hasPlan: true,
+    weights: W,
+    assistants: [],
+    aCnt: null,
+    abCnt: null,
+    cnfmDtm: null,
+    ...extra,
   })
-  // 제출 상태 강의는 등급까지 계산된 상태로 둔다
-  for (const e of enrollments.filter((e) => e.lecNo === 106)) e.letter = 'B+'
+  const enroll = (
+    stdNo: string,
+    lecNo: number,
+    scores: (number | null)[] | null = null,
+    extra: Partial<DbEnrollment> = {},
+  ): DbEnrollment => ({
+    stdNo,
+    lecNo,
+    enrlDtm: at(-2, '10:05'),
+    retake: false,
+    procType: 'STUDENT',
+    midScr: scores?.[0] ?? null,
+    finScr: scores?.[1] ?? null,
+    hwScr: scores?.[2] ?? null,
+    attScr: scores?.[3] ?? null,
+    ...extra,
+  })
 
   return {
     version: DB_VERSION,
-    today: '2026-08-11',
-    seq: id,
-    users,
-    semesters,
-    schedules,
-    courses,
-    lectures,
-    cart: [
-      { studentNo: '20230001', lecNo: 101 },
-      { studentNo: '20230001', lecNo: 108 },
-      { studentNo: '20230001', lecNo: 103 },
+    users: [
+      user('9001', '관리자', 'ADMIN', 101),
+      user('100001', '김정훈', 'PROFESSOR', 101, { office: '정보관 501호' }),
+      user('100002', '이수진', 'PROFESSOR', 101, { office: '정보관 502호' }),
+      user('100005', '정다은', 'PROFESSOR', 103, { office: '본관 301호' }),
+      student('20230001', '강민준', 101, 4),
+      student('20230003', '윤서연', 101, 4, 'ON_LEAVE'),
+      student('20240001', '박지호', 101, 3),
+      student('20240003', '최하은', 101, 3),
+      student('20240005', '한도윤', 102, 3),
+      student('20250001', '오시우', 101, 2),
+      student('20260001', '문서윤', 101, 1),
     ],
-    enrollments,
+    // 7: 지난 학기(성적 확정), 9: 현재 학기(성적 입력 기간), 11: 신청 대상 학기(수강신청 기간)
+    semesters: [
+      { semNo: 7, yr: 2026, semType: 'FIRST', regular: true, current: false },
+      { semNo: 9, yr: 2026, semType: 'SECOND', regular: true, current: true },
+      { semNo: 11, yr: 2027, semType: 'FIRST', regular: true, current: false },
+    ],
+    schedules: [
+      {
+        schdNo: 1,
+        semNo: 9,
+        schdType: 'CART',
+        tgtYrLvl: null,
+        startDtm: at(-120, '10:00'),
+        endDtm: at(-117, '17:00'),
+      },
+      {
+        schdNo: 2,
+        semNo: 9,
+        schdType: 'ENROLL',
+        tgtYrLvl: null,
+        startDtm: at(-115, '10:00'),
+        endDtm: at(-112, '17:00'),
+      },
+      {
+        schdNo: 3,
+        semNo: 9,
+        schdType: 'ADJUST',
+        tgtYrLvl: null,
+        startDtm: at(-100, '10:00'),
+        endDtm: at(-95, '17:00'),
+      },
+      {
+        schdNo: 4,
+        semNo: 9,
+        schdType: 'GRADE',
+        tgtYrLvl: null,
+        startDtm: at(-1, '09:00'),
+        endDtm: at(5, '17:00'),
+      },
+      {
+        schdNo: 5,
+        semNo: 11,
+        schdType: 'CART',
+        tgtYrLvl: null,
+        startDtm: at(-5, '10:00'),
+        endDtm: at(-2, '17:00'),
+      },
+      {
+        schdNo: 6,
+        semNo: 11,
+        schdType: 'ENROLL',
+        tgtYrLvl: null,
+        startDtm: at(-1, '10:00'),
+        endDtm: at(3, '17:00'),
+      },
+      {
+        schdNo: 7,
+        semNo: 11,
+        schdType: 'ADJUST',
+        tgtYrLvl: null,
+        startDtm: at(7, '10:00'),
+        endDtm: at(10, '17:00'),
+      },
+    ],
     maxCredits: {},
-  }
-}
-
-function student(userNo: string, name: string, deptName: string, grade: number): DbUser {
-  return {
-    userNo,
-    name,
-    role: 'STUDENT',
-    active: true,
-    deptName,
-    grade,
-    email: `${userNo}@univ.ac.kr`,
-    password: '1234',
-  }
-}
-
-function course(
-  code: string,
-  name: string,
-  credits: number,
-  category: Course['category'],
-  deptName: string,
-  targetGrade: number,
-  prerequisites: Course['prerequisites'] = [],
-): Course {
-  return {
-    code,
-    name,
-    credits,
-    category,
-    deptName,
-    targetGrade,
-    gradingType: 'GRADE',
-    prerequisites,
-  }
-}
-
-function lec(
-  lecNo: number,
-  semesterId: string,
-  courseCode: string,
-  section: string,
-  professorNo: string,
-  capacity: number,
-  times: LectureTime[],
-  extra: Partial<DbLecture> = {},
-): DbLecture {
-  return {
-    lecNo,
-    semesterId,
-    courseCode,
-    section,
-    professorNo,
-    capacity,
-    times,
-    isEnglish: false,
-    excludeRelative: false,
-    status: 'OPEN',
-    gradeStatus: 'NOT_ENTERED',
-    syllabusUrl: null,
-    ratios: null,
-    assistants: [],
-    ...extra,
+    courses: [
+      course('1010001', '프로그래밍기초', 101, 3, 'MAJOR_BASIC', 1),
+      course('1010007', '자료구조', 101, 3, 'MAJOR_REQ', 2, {
+        prerequisites: [{ prereqCrsCd: '1010001', prereqCrsNm: '프로그래밍기초', minReqGrd: 'D-' }],
+      }),
+      course('1010010', '운영체제', 101, 3, 'MAJOR_REQ', 2),
+      course('1010015', '데이터베이스', 101, 3, 'MAJOR_ELEC', 3),
+      course('1010020', '캡스톤디자인', 101, 3, 'MAJOR_REQ', 4),
+      course('1020003', '경영학원론', 102, 3, 'MAJOR_BASIC', 1),
+      course('1030001', '글쓰기', 103, 2, 'GEN_REQ', null),
+      course('1030009', '채플', 103, 0.5, 'CHAPEL', null, { evalType: 'PASS_FAIL' }),
+    ],
+    lectures: [
+      // 지난 학기
+      lecture(1, 7, '1010001', 1, '100001', 40, [slot('TUE', '09:00', '10:15', '21301')], {
+        grdStat: 'CONFIRMED',
+        cnfmDtm: at(-150, '12:00'),
+      }),
+      lecture(2, 7, '1030001', 1, '100005', 30, [slot('FRI', '09:00', '10:50', '21302')], {
+        grdStat: 'CONFIRMED',
+        cnfmDtm: at(-150, '12:00'),
+      }),
+      // 현재 학기 (성적 입력 기간)
+      lecture(
+        3,
+        9,
+        '1010010',
+        1,
+        '100001',
+        40,
+        [slot('MON', '10:30', '11:45', '21301'), slot('WED', '10:30', '11:45', '21301')],
+        { assistants: ['20240005'], grdStat: 'ENTERING' },
+      ),
+      lecture(
+        4,
+        9,
+        '1010015',
+        1,
+        '100002',
+        35,
+        [slot('TUE', '13:30', '14:45', '21302'), slot('THU', '13:30', '14:45', null, 'ONLINE')],
+        { grdStat: 'SUBMITTED' },
+      ),
+      lecture(5, 9, '1030009', 1, '100005', 300, [slot('WED', '12:00', '12:50', '01101')], {
+        weights: null,
+      }),
+      // 신청 대상 학기
+      lecture(6, 11, '1010007', 1, '100001', 40, [
+        slot('MON', '09:00', '10:15', '21301'),
+        slot('WED', '09:00', '10:15', '21301'),
+      ]),
+      lecture(7, 11, '1010007', 2, '100002', 40, [
+        slot('TUE', '10:30', '11:45', '21302'),
+        slot('THU', '10:30', '11:45', '21302'),
+      ]),
+      lecture(
+        8,
+        11,
+        '1010015',
+        1,
+        '100002',
+        35,
+        [slot('TUE', '15:00', '16:15', null, 'ONLINE'), slot('THU', '15:00', '16:15', '21303')],
+        { engLec: true },
+      ),
+      lecture(9, 11, '1010020', 1, '100001', 2, [slot('FRI', '13:00', '15:45', null)], {
+        hasPlan: false,
+        weights: null,
+      }),
+      lecture(10, 11, '1020003', 1, '100005', 30, [
+        slot('MON', '15:00', '16:15', '06101'),
+        slot('WED', '15:00', '16:15', '06101'),
+      ]),
+      lecture(11, 11, '1030001', 1, '100005', 25, [slot('FRI', '09:00', '10:50', '21302')]),
+      lecture(12, 11, '1030009', 1, '100005', 300, [slot('WED', '12:00', '12:50', '01101')], {
+        weights: null,
+      }),
+    ],
+    enrollments: [
+      enroll('20240001', 1, [88, 92, 95, 100]),
+      enroll('20240001', 2, [75, 80, 85, 90]),
+      enroll('20240001', 3, [82, 77, null, 100]),
+      enroll('20240003', 3, [91, 88, 90, 100]),
+      enroll('20250001', 3),
+      enroll('20240001', 4, [70, 72, 80, 90]),
+      enroll('20240003', 4, [95, 97, 100, 100]),
+      enroll('20260001', 5),
+      enroll('20230001', 9),
+      enroll('20250001', 9, null, { procType: 'ADMIN' }),
+      enroll('20240003', 6),
+    ],
+    cart: [{ stdNo: '20240001', lecNo: 8, addedAt: at(-4, '11:20') }],
+    seq: 100,
   }
 }

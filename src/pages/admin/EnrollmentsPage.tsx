@@ -1,4 +1,5 @@
-// REG-05 수강신청 현황, 직권 추가·취소
+// REG-05 수강신청 현황 관리: 강의별 현황 조회, 관리자 추가·취소
+// 추가·취소할 수 있는 기간인지는 서버가 판단하고, 거절되면 사유를 그대로 보여준다.
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { useSearchParams } from 'react-router'
@@ -10,30 +11,30 @@ import {
   Empty,
   ErrorBox,
   Loading,
-  Notice,
   PageHeader,
   SemesterSelect,
   Stat,
 } from '../../components/ui'
 import { useAsync } from '../../hooks/useAsync'
-import { formatTimes } from '../../lib/format'
+import { formatDateTime, formatSlots, PROC_TYPE_LABEL } from '../../lib/format'
+import type { LectureResponse } from '../../types'
 
 export default function AdminEnrollmentsPage() {
-  const [semesterId, setSemesterId] = useState('')
+  const [semNo, setSemNo] = useState<number | null>(null)
   const [params, setParams] = useSearchParams()
   const lecNo = Number(params.get('lecNo')) || null
   const lectures = useAsync(
-    () => (semesterId ? adminApi.lectures(semesterId) : Promise.resolve(null)),
-    [semesterId],
+    () => (semNo != null ? adminApi.lectures(semNo) : Promise.resolve(null)),
+    [semNo],
   )
-  const open = (lectures.data ?? []).filter((l) => l.status === 'OPEN')
+  const open = (lectures.data ?? []).filter((l) => l.lecStat === 'OPEN')
+  const selected = open.find((l) => l.lecNo === lecNo)
 
   return (
     <>
       <PageHeader
         title="수강신청 현황"
-        desc="강의를 골라 신청 현황을 보고, 정정 기간까지 직권으로 추가·취소합니다."
-        actions={<SemesterSelect value={semesterId} onChange={setSemesterId} />}
+        actions={<SemesterSelect value={semNo} onChange={setSemNo} />}
       />
       <div className="filters">
         <label className="grow">
@@ -45,8 +46,7 @@ export default function AdminEnrollmentsPage() {
             <option value="">강의를 고르세요</option>
             {open.map((l) => (
               <option key={l.lecNo} value={l.lecNo}>
-                {l.courseCode} {l.courseName} ({l.section}) · {l.professorName} · {l.enrolledCount}/
-                {l.capacity}
+                {l.crsCd} {l.crsNm} ({l.sectNo}) · {l.profNm} · {l.enrlCnt}/{l.cap}
               </option>
             ))}
           </select>
@@ -54,7 +54,7 @@ export default function AdminEnrollmentsPage() {
       </div>
       {lectures.error && <ErrorBox message={lectures.error} onRetry={lectures.reload} />}
       {lecNo ? (
-        <Status lecNo={lecNo} onChanged={lectures.reload} />
+        <Status lecNo={lecNo} lecture={selected} onChanged={lectures.reload} />
       ) : (
         <Empty>강의를 고르면 신청 현황이 보입니다.</Empty>
       )}
@@ -62,79 +62,88 @@ export default function AdminEnrollmentsPage() {
   )
 }
 
-function Status({ lecNo, onChanged }: { lecNo: number; onChanged: () => void }) {
+function Status({
+  lecNo,
+  lecture,
+  onChanged,
+}: {
+  lecNo: number
+  lecture?: LectureResponse
+  onChanged: () => void
+}) {
   const toast = useToast()
-  const { data, error, loading, reload } = useAsync(() => adminApi.enrollmentStatus(lecNo), [lecNo])
-  const [studentNo, setStudentNo] = useState('')
+  const { data, error, loading, reload, setData } = useAsync(
+    () => adminApi.enrollmentStatus(lecNo),
+    [lecNo],
+  )
+  const [stdNo, setStdNo] = useState('')
   const [busy, setBusy] = useState(false)
 
   if (error) return <ErrorBox message={error} onRetry={reload} />
   if (loading && !data) return <Loading />
   if (!data) return null
-  const l = data.lecture
 
-  const act = async (fn: () => Promise<unknown>, ok: string) => {
+  const add = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!stdNo.trim()) return
     setBusy(true)
     try {
-      await fn()
-      toast(ok)
-      await reload()
+      setData(await adminApi.addEnrollment(lecNo, stdNo.trim()))
+      toast('추가했습니다.')
+      setStdNo('')
       onChanged()
-    } catch (e) {
-      toast(errorMessage(e), 'error')
+    } catch (err) {
+      toast(errorMessage(err), 'error')
     } finally {
       setBusy(false)
     }
   }
-  const add = (e: FormEvent) => {
-    e.preventDefault()
-    if (!studentNo.trim()) return
-    act(() => adminApi.forceEnroll(lecNo, studentNo.trim()), '직권 추가했습니다.').then(() =>
-      setStudentNo(''),
-    )
+  const cancel = async (no: string, name: string) => {
+    if (!confirm(`${name}(${no})의 신청을 취소할까요?`)) return
+    setBusy(true)
+    try {
+      await adminApi.cancelEnrollment(lecNo, no)
+      toast('취소했습니다.')
+      await reload()
+      onChanged()
+    } catch (err) {
+      toast(errorMessage(err), 'error')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
     <div className="stack">
       <div className="stats">
-        <Stat
-          label="강의"
-          value={`${l.courseName} (${l.section})`}
-          sub={`${l.professorName} · ${formatTimes(l.times)}`}
-        />
-        <Stat label="정원" value={l.capacity} />
-        <Stat label="신청 인원" value={l.enrolledCount} />
+        {lecture && (
+          <Stat
+            label="강의"
+            value={`${lecture.crsNm} (${lecture.sectNo})`}
+            sub={`${lecture.profNm} · ${formatSlots(lecture.timeSlots)}`}
+          />
+        )}
+        <Stat label="정원" value={data.cap} />
+        <Stat label="신청 인원" value={data.enrlCnt} />
         <Stat
           label="잔여 인원"
-          value={
-            l.capacity - l.enrolledCount <= 0 ? (
-              <span className="text-danger">마감</span>
-            ) : (
-              l.capacity - l.enrolledCount
-            )
-          }
+          value={data.remaining <= 0 ? <span className="text-danger">마감</span> : data.remaining}
         />
       </div>
-      {data.editable ? (
-        <section className="card">
-          <h2>직권 추가</h2>
-          <p className="muted small">
-            정원·시간 중복·최대학점 검사 없이 추가합니다. 같은 과목 중복과 재수강 조건은 검사합니다.
-          </p>
-          <form className="inline-form" onSubmit={add}>
-            <input
-              placeholder="학번"
-              value={studentNo}
-              onChange={(e) => setStudentNo(e.target.value)}
-            />
-            <button className="btn btn-primary" disabled={busy}>
-              추가
-            </button>
-          </form>
-        </section>
-      ) : (
-        <Notice>정정 기간이 끝나 조회만 할 수 있습니다.</Notice>
-      )}
+      <section className="card">
+        <h2>수강 추가</h2>
+        <form className="inline-form" onSubmit={add}>
+          <input
+            placeholder="학번"
+            inputMode="numeric"
+            value={stdNo}
+            onChange={(e) => setStdNo(e.target.value)}
+          />
+          <button className="btn btn-primary" disabled={busy}>
+            추가
+          </button>
+        </form>
+      </section>
       {data.students.length === 0 ? (
         <Empty>신청한 학생이 없습니다.</Empty>
       ) : (
@@ -144,34 +153,37 @@ function Status({ lecNo, onChanged }: { lecNo: number; onChanged: () => void }) 
               <tr>
                 <th>학번</th>
                 <th>이름</th>
-                <th>학과</th>
                 <th className="num">학년</th>
+                <th>신청일시</th>
+                <th>처리구분</th>
                 <th>비고</th>
-                {data.editable && <th />}
+                <th />
               </tr>
             </thead>
             <tbody>
               {data.students.map((s) => (
-                <tr key={s.enrollmentId}>
-                  <td className="mono">{s.studentNo}</td>
-                  <td>{s.name}</td>
-                  <td>{s.deptName}</td>
-                  <td className="num">{s.grade}</td>
-                  <td>{s.isRetake && <Badge tone="amber">재수강</Badge>}</td>
-                  {data.editable && (
-                    <td className="row-actions">
-                      <button
-                        className="btn btn-sm btn-danger"
-                        disabled={busy}
-                        onClick={() =>
-                          confirm(`${s.name}(${s.studentNo})의 신청을 직권 취소할까요?`) &&
-                          act(() => adminApi.forceCancel(s.enrollmentId), '직권 취소했습니다.')
-                        }
-                      >
-                        취소
-                      </button>
-                    </td>
-                  )}
+                <tr key={s.stdNo}>
+                  <td className="mono">{s.stdNo}</td>
+                  <td>{s.stdNm}</td>
+                  <td className="num">{s.yrLvl}</td>
+                  <td>{formatDateTime(s.enrlDtm)}</td>
+                  <td>
+                    {s.procType === 'ADMIN' ? (
+                      <Badge tone="blue">{PROC_TYPE_LABEL.ADMIN}</Badge>
+                    ) : (
+                      PROC_TYPE_LABEL.STUDENT
+                    )}
+                  </td>
+                  <td>{s.retake && <Badge tone="amber">재수강</Badge>}</td>
+                  <td className="row-actions">
+                    <button
+                      className="btn btn-sm btn-danger"
+                      disabled={busy}
+                      onClick={() => cancel(s.stdNo, s.stdNm)}
+                    >
+                      취소
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

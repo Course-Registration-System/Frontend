@@ -1,4 +1,4 @@
-// ACA-03 강의 개설 관리
+// ACA-03 강의 개설 관리: 개설·수정·폐강
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { adminApi } from '../../api'
@@ -16,22 +16,59 @@ import {
   SemesterSelect,
 } from '../../components/ui'
 import { useAsync } from '../../hooks/useAsync'
-import { DAY_LABEL, DAYS, formatRooms, formatTimes, PERIODS } from '../../lib/format'
-import type { Day, Lecture, LectureForm, LectureTime } from '../../types'
+import { CLASSROOMS } from '../../lib/codes'
+import { CLS_TYPE_LABEL, DOW_LABEL, DOWS, formatPlaces, formatSlots, hm } from '../../lib/format'
+import type { ClsType, Dow, LectureResponse, TimeSlotRequest } from '../../types'
+
+interface LectureForm {
+  crsCd: string
+  semNo: number
+  profNo: string
+  sectNo: number
+  cap: number
+  engLec: boolean
+  relGrdExmp: boolean
+  timeSlots: TimeSlotRequest[]
+}
+
+const NEW_SLOT: TimeSlotRequest = {
+  dow: 'MON',
+  startTm: '09:00',
+  endTm: '10:15',
+  clsType: 'OFFLINE',
+  roomCd: null,
+}
+
+const toForm = (l: LectureResponse): LectureForm => ({
+  crsCd: l.crsCd,
+  semNo: l.semNo,
+  profNo: l.profNo,
+  sectNo: l.sectNo,
+  cap: l.cap,
+  engLec: l.engLec,
+  relGrdExmp: l.relGrdExmp,
+  timeSlots: l.timeSlots.map((t) => ({
+    dow: t.dow,
+    startTm: hm(t.startTm),
+    endTm: hm(t.endTm),
+    clsType: t.clsType,
+    roomCd: t.roomCd,
+  })),
+})
 
 export default function LecturesPage() {
   const toast = useToast()
-  const [semesterId, setSemesterId] = useState('')
+  const [semNo, setSemNo] = useState<number | null>(null)
   const { data, error, loading, reload } = useAsync(
-    () => (semesterId ? adminApi.lectures(semesterId) : Promise.resolve(null)),
-    [semesterId],
+    () => (semNo != null ? adminApi.lectures(semNo) : Promise.resolve(null)),
+    [semNo],
   )
   const [editing, setEditing] = useState<{ lecNo?: number; form: LectureForm } | null>(null)
 
-  const close = async (l: Lecture) => {
+  const close = async (l: LectureResponse) => {
     if (
       !confirm(
-        `${l.courseName} ${l.section}분반을 폐강할까요? 신청한 학생 ${l.enrolledCount}명의 신청이 모두 취소됩니다.`,
+        `${l.crsNm} ${l.sectNo}분반을 폐강할까요? 신청 ${l.enrlCnt}건이 취소되고 장바구니에서도 빠집니다.`,
       )
     )
       return
@@ -48,24 +85,23 @@ export default function LecturesPage() {
     <>
       <PageHeader
         title="강의 개설 관리"
-        desc="과목을 골라 분반·교수·정원·강의시간을 정해 강의를 개설합니다."
         actions={
           <>
-            <SemesterSelect value={semesterId} onChange={setSemesterId} />
+            <SemesterSelect value={semNo} onChange={setSemNo} />
             <button
               className="btn btn-primary"
-              disabled={!semesterId}
+              disabled={semNo == null}
               onClick={() =>
                 setEditing({
                   form: {
-                    semesterId,
-                    courseCode: '',
-                    section: '01',
-                    professorNo: '',
-                    capacity: 40,
-                    isEnglish: false,
-                    excludeRelative: false,
-                    times: [{ day: 'MON', startPeriod: 1, endPeriod: 2, room: '' }],
+                    crsCd: '',
+                    semNo: semNo!,
+                    profNo: '',
+                    sectNo: 1,
+                    cap: 40,
+                    engLec: false,
+                    relGrdExmp: false,
+                    timeSlots: [{ ...NEW_SLOT }],
                   },
                 })
               }
@@ -100,47 +136,33 @@ export default function LecturesPage() {
               </thead>
               <tbody>
                 {data.map((l) => (
-                  <tr key={l.lecNo} className={l.status === 'CLOSED' ? 'row-muted' : ''}>
-                    <td className="mono">{l.courseCode}</td>
-                    <td>{l.courseName}</td>
-                    <td>{l.section}</td>
-                    <td>{l.professorName}</td>
-                    <td>{formatTimes(l.times)}</td>
-                    <td>{formatRooms(l.times)}</td>
-                    <td className="num">{l.capacity}</td>
-                    <td className="num">{l.enrolledCount}</td>
+                  <tr key={l.lecNo} className={l.lecStat === 'CLOSED' ? 'row-muted' : ''}>
+                    <td className="mono">{l.crsCd}</td>
+                    <td>{l.crsNm}</td>
+                    <td>{l.sectNo}</td>
+                    <td>{l.profNm}</td>
+                    <td>{formatSlots(l.timeSlots)}</td>
+                    <td>{formatPlaces(l.timeSlots)}</td>
+                    <td className="num">{l.cap}</td>
+                    <td className="num">{l.enrlCnt}</td>
                     <td>
-                      {l.isEnglish && <Badge tone="blue">EN</Badge>}
-                      {l.excludeRelative && <Badge>상대평가 제외</Badge>}
+                      {l.engLec && <Badge tone="blue">EN</Badge>}
+                      {l.relGrdExmp && <Badge>상대평가 제외</Badge>}
                     </td>
                     <td>
-                      <LectureStatusBadge status={l.status} />
+                      <LectureStatusBadge status={l.lecStat} />
                     </td>
                     <td className="row-actions">
                       <button
                         className="btn btn-sm"
-                        disabled={l.status === 'CLOSED'}
-                        onClick={() =>
-                          setEditing({
-                            lecNo: l.lecNo,
-                            form: {
-                              semesterId: l.semesterId,
-                              courseCode: l.courseCode,
-                              section: l.section,
-                              professorNo: l.professorNo,
-                              capacity: l.capacity,
-                              isEnglish: l.isEnglish,
-                              excludeRelative: l.excludeRelative,
-                              times: l.times,
-                            },
-                          })
-                        }
+                        disabled={l.lecStat === 'CLOSED'}
+                        onClick={() => setEditing({ lecNo: l.lecNo, form: toForm(l) })}
                       >
                         수정
                       </button>
                       <button
                         className="btn btn-sm btn-danger"
-                        disabled={l.status === 'CLOSED'}
+                        disabled={l.lecStat === 'CLOSED'}
                         onClick={() => close(l)}
                       >
                         폐강
@@ -188,18 +210,19 @@ function LectureModal({
   const [busy, setBusy] = useState(false)
   const set = <K extends keyof LectureForm>(k: K, v: LectureForm[K]) =>
     setF((x) => ({ ...x, [k]: v }))
-  const setTime = (i: number, patch: Partial<LectureTime>) =>
+  const setSlot = (i: number, patch: Partial<TimeSlotRequest>) =>
     set(
-      'times',
-      f.times.map((t, j) => (j === i ? { ...t, ...patch } : t)),
+      'timeSlots',
+      f.timeSlots.map((t, j) => (j === i ? { ...t, ...patch } : t)),
     )
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
     setBusy(true)
     setErr(null)
+    const { profNo, cap, engLec, relGrdExmp, timeSlots } = f
     try {
-      if (lecNo) await adminApi.updateLecture(lecNo, f)
+      if (lecNo) await adminApi.updateLecture(lecNo, { profNo, cap, engLec, relGrdExmp, timeSlots })
       else await adminApi.createLecture(f)
       toast('저장했습니다.')
       onSaved()
@@ -227,40 +250,42 @@ function LectureModal({
         </>
       }
     >
+      {refs.error && <ErrorBox message={refs.error} onRetry={refs.reload} />}
       {refs.loading && !refs.data ? (
         <Loading />
       ) : (
         <form id="lecture-form" className="form-grid" onSubmit={submit}>
           <Field label="과목">
             <select
-              value={f.courseCode}
+              value={f.crsCd}
               disabled={!!lecNo}
-              onChange={(e) => set('courseCode', e.target.value)}
-              required
+              onChange={(e) => set('crsCd', e.target.value)}
             >
               <option value="">선택</option>
               {courses.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.code} {c.name}
+                <option key={c.crsCd} value={c.crsCd}>
+                  {c.crsCd} {c.crsNm}
                 </option>
               ))}
             </select>
           </Field>
           <Field label="분반">
-            <input value={f.section} onChange={(e) => set('section', e.target.value)} required />
+            <input
+              type="number"
+              min={1}
+              value={f.sectNo}
+              disabled={!!lecNo}
+              onChange={(e) => set('sectNo', Number(e.target.value))}
+            />
           </Field>
           <Field label="담당 교수">
-            <select
-              value={f.professorNo}
-              onChange={(e) => set('professorNo', e.target.value)}
-              required
-            >
+            <select value={f.profNo} onChange={(e) => set('profNo', e.target.value)}>
               <option value="">선택</option>
               {profs
-                .filter((p) => p.active)
+                .filter((p) => p.acctStat === 'ACTIVE')
                 .map((p) => (
-                  <option key={p.userNo} value={p.userNo}>
-                    {p.name} ({p.deptName})
+                  <option key={p.usrNo} value={p.usrNo}>
+                    {p.usrNm} ({p.deptNm})
                   </option>
                 ))}
             </select>
@@ -268,111 +293,129 @@ function LectureModal({
           <Field label="정원">
             <input
               type="number"
-              min={1}
-              value={f.capacity}
-              onChange={(e) => set('capacity', Number(e.target.value))}
+              value={f.cap}
+              onChange={(e) => set('cap', Number(e.target.value))}
             />
           </Field>
           <div className="span-2 checks">
             <label>
               <input
                 type="checkbox"
-                checked={f.isEnglish}
-                onChange={(e) => set('isEnglish', e.target.checked)}
+                checked={f.engLec}
+                onChange={(e) => set('engLec', e.target.checked)}
               />{' '}
               영어강의(EN)
             </label>
             <label>
               <input
                 type="checkbox"
-                checked={f.excludeRelative}
-                onChange={(e) => set('excludeRelative', e.target.checked)}
+                checked={f.relGrdExmp}
+                onChange={(e) => set('relGrdExmp', e.target.checked)}
               />{' '}
               상대평가 제외
             </label>
           </div>
           <div className="span-2">
             <span className="field-label">강의시간</span>
-            <table className="table compact">
-              <thead>
-                <tr>
-                  <th>요일</th>
-                  <th>시작 교시</th>
-                  <th>종료 교시</th>
-                  <th>강의실</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {f.times.map((t, i) => (
-                  <tr key={i}>
-                    <td>
-                      <select
-                        value={t.day}
-                        onChange={(e) => setTime(i, { day: e.target.value as Day })}
-                      >
-                        {DAYS.map((d) => (
-                          <option key={d} value={d}>
-                            {DAY_LABEL[d]}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <select
-                        value={t.startPeriod}
-                        onChange={(e) => setTime(i, { startPeriod: Number(e.target.value) })}
-                      >
-                        {PERIODS.map((p) => (
-                          <option key={p}>{p}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <select
-                        value={t.endPeriod}
-                        onChange={(e) => setTime(i, { endPeriod: Number(e.target.value) })}
-                      >
-                        {PERIODS.map((p) => (
-                          <option key={p}>{p}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <input
-                        value={t.room}
-                        onChange={(e) => setTime(i, { room: e.target.value })}
-                        placeholder="예: 공학관 301"
-                      />
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        disabled={f.times.length === 1}
-                        onClick={() =>
-                          set(
-                            'times',
-                            f.times.filter((_, j) => j !== i),
-                          )
-                        }
-                      >
-                        삭제
-                      </button>
-                    </td>
+            <div className="table-wrap">
+              <table className="table compact">
+                <thead>
+                  <tr>
+                    <th>요일</th>
+                    <th>시작시각</th>
+                    <th>종료시각</th>
+                    <th>수업유형</th>
+                    <th>강의실</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {f.timeSlots.map((t, i) => (
+                    <tr key={i}>
+                      <td>
+                        <select
+                          value={t.dow}
+                          onChange={(e) => setSlot(i, { dow: e.target.value as Dow })}
+                        >
+                          {DOWS.map((d) => (
+                            <option key={d} value={d}>
+                              {DOW_LABEL[d]}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <input
+                          type="time"
+                          step={300}
+                          value={t.startTm}
+                          onChange={(e) => setSlot(i, { startTm: e.target.value })}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="time"
+                          step={300}
+                          value={t.endTm}
+                          onChange={(e) => setSlot(i, { endTm: e.target.value })}
+                        />
+                      </td>
+                      <td>
+                        <select
+                          value={t.clsType}
+                          onChange={(e) => {
+                            const clsType = e.target.value as ClsType
+                            setSlot(i, {
+                              clsType,
+                              roomCd: clsType === 'ONLINE' ? null : t.roomCd,
+                            })
+                          }}
+                        >
+                          {(Object.keys(CLS_TYPE_LABEL) as ClsType[]).map((c) => (
+                            <option key={c} value={c}>
+                              {CLS_TYPE_LABEL[c]}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <select
+                          value={t.roomCd ?? ''}
+                          disabled={t.clsType === 'ONLINE'}
+                          onChange={(e) => setSlot(i, { roomCd: e.target.value || null })}
+                        >
+                          <option value="">{t.clsType === 'ONLINE' ? '온라인' : '미배정'}</option>
+                          {CLASSROOMS.map((r) => (
+                            <option key={r.roomCd} value={r.roomCd}>
+                              {r.roomNm}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn btn-sm"
+                          disabled={f.timeSlots.length === 1}
+                          onClick={() =>
+                            set(
+                              'timeSlots',
+                              f.timeSlots.filter((_, j) => j !== i),
+                            )
+                          }
+                        >
+                          삭제
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             <button
               type="button"
               className="btn btn-sm"
-              onClick={() =>
-                set('times', [
-                  ...f.times,
-                  { day: 'WED', startPeriod: 1, endPeriod: 1, room: f.times[0]?.room ?? '' },
-                ])
-              }
+              onClick={() => set('timeSlots', [...f.timeSlots, { ...NEW_SLOT }])}
             >
               + 시간 추가
             </button>

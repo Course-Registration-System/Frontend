@@ -1,32 +1,48 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { authApi, commonApi } from '../api'
+import { authApi, commonApi, studentApi } from '../api'
 import { tokenStore } from '../api/client'
-import type { CurrentPeriod, User } from '../types'
+import { pickPeriod } from '../lib/period'
+import type { CurrentPeriod, MyInfo } from '../types'
 
 interface AuthValue {
-  user: User | null
-  /** 로그인 후 한 번 조회해 두는 현재 기간 (학생 학년 기준) */
+  user: MyInfo | null
+  /** 학생: 신청 대상 학기와 지금 기간 (신청 대상 학기가 없으면 null) */
   period: CurrentPeriod | null
   loading: boolean
-  login: (userNo: string, password: string) => Promise<User>
-  logout: () => Promise<void>
+  login: (usrNo: string, password: string) => Promise<MyInfo>
+  logout: () => void
   refresh: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthValue | null>(null)
 
+/** 장바구니 응답의 semNo 가 신청 대상 학기다. 그 학기 일정과 서버 시각으로 기간을 고른다 */
+async function loadPeriod(user: MyInfo): Promise<CurrentPeriod | null> {
+  if (user.role !== 'STUDENT') return null
+  try {
+    const { semNo } = await studentApi.cart()
+    const [schedules, health] = await Promise.all([
+      commonApi.schedules(semNo),
+      commonApi.health().catch(() => null),
+    ])
+    return pickPeriod(semNo, schedules, health ? new Date(health.time) : new Date())
+  } catch {
+    return null
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<MyInfo | null>(null)
   const [period, setPeriod] = useState<CurrentPeriod | null>(null)
   // 저장된 토큰이 있을 때만 첫 조회를 기다린다
   const [loading, setLoading] = useState(() => !!tokenStore.get())
 
   const refresh = useCallback(async () => {
     try {
-      const [me, p] = await Promise.all([authApi.me(), commonApi.currentPeriod()])
+      const me = await authApi.me()
       setUser(me)
-      setPeriod(p)
+      setPeriod(await loadPeriod(me))
     } catch {
       tokenStore.set(null)
       setUser(null)
@@ -38,22 +54,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (tokenStore.get()) void refresh().finally(() => setLoading(false))
   }, [refresh])
 
-  const login = useCallback(async (userNo: string, password: string) => {
-    const res = await authApi.login(userNo, password)
-    tokenStore.set(res.token)
+  const login = useCallback(async (usrNo: string, password: string) => {
+    const res = await authApi.login(usrNo, password)
+    tokenStore.set(res.accessToken)
     setUser(res.user)
-    setPeriod(await commonApi.currentPeriod())
+    setPeriod(await loadPeriod(res.user))
     return res.user
   }, [])
 
-  const logout = useCallback(async () => {
-    try {
-      await authApi.logout()
-    } finally {
-      tokenStore.set(null)
-      setUser(null)
-      setPeriod(null)
-    }
+  // 로그아웃 API 는 없다. 저장한 토큰만 지운다
+  const logout = useCallback(() => {
+    tokenStore.set(null)
+    setUser(null)
+    setPeriod(null)
   }, [])
 
   const value = useMemo(
@@ -70,10 +83,10 @@ export function useAuth() {
   return v
 }
 
-/** 역할별 첫 화면 */
+/** 역할별 메인 화면 (USR-01 ⑤) */
 // eslint-disable-next-line react/only-export-components
-export function homePath(user: User) {
+export function homePath(user: MyInfo) {
   if (user.role === 'ADMIN') return '/admin'
   if (user.role === 'PROFESSOR') return '/teaching/lectures'
-  return '/student/timetable'
+  return '/student/registration'
 }

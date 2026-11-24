@@ -1,14 +1,27 @@
-import { DAYS, DAY_LABEL, PERIODS, periodStart } from '../lib/format'
-import type { Lecture } from '../types'
+import { DOW_LABEL, DOWS, hm, placeOf } from '../lib/format'
+import type { EnrollmentResponse } from '../types'
 
 const COLORS = 8
+const SLOT = 30 // 분 단위 한 칸
 
-/** 주간 시간표 격자. 과목명·강의실·교수명 표시 */
-export function Timetable({ lectures }: { lectures: Lecture[] }) {
-  const days = lectures.some((l) => l.times.some((t) => t.day === 'SAT')) ? DAYS : DAYS.slice(0, 5)
-  const maxPeriod = Math.max(9, ...lectures.flatMap((l) => l.times.map((t) => t.endPeriod)))
-  const periods = PERIODS.filter((p) => p <= maxPeriod)
+const toMin = (t: string) => {
+  const [h, m] = t.split(':').map(Number)
+  return h * 60 + (m || 0)
+}
+const fmt = (min: number) =>
+  `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`
+
+/** REG-04 주간 시간표 격자. 과목명·장소(온라인·미배정 표시)·교수명 */
+export function Timetable({ lectures }: { lectures: EnrollmentResponse[] }) {
+  const all = lectures.flatMap((l) => l.timeSlots)
+  const days = DOWS.filter(
+    (d, i) => i < 5 || all.some((t) => t.dow === d), // 토·일은 수업이 있을 때만
+  )
+  const start = Math.min(9 * 60, ...all.map((t) => Math.floor(toMin(t.startTm) / 60) * 60))
+  const end = Math.max(18 * 60, ...all.map((t) => Math.ceil(toMin(t.endTm) / 60) * 60))
+  const slots = (end - start) / SLOT
   const colorOf = new Map(lectures.map((l, i) => [l.lecNo, i % COLORS]))
+  const row = (min: number) => Math.round((min - start) / SLOT) + 2
 
   return (
     <div className="tt-wrap">
@@ -16,46 +29,48 @@ export function Timetable({ lectures }: { lectures: Lecture[] }) {
         className="tt"
         style={{
           gridTemplateColumns: `56px repeat(${days.length}, minmax(96px, 1fr))`,
-          gridTemplateRows: `32px repeat(${periods.length}, 56px)`,
+          gridTemplateRows: `32px repeat(${slots}, 26px)`,
         }}
       >
         <div className="tt-corner" />
         {days.map((d, i) => (
           <div key={d} className="tt-day" style={{ gridColumn: i + 2, gridRow: 1 }}>
-            {DAY_LABEL[d]}
+            {DOW_LABEL[d]}
           </div>
         ))}
-        {periods.map((p) => (
-          <div key={p} className="tt-period" style={{ gridColumn: 1, gridRow: p + 1 }}>
-            <b>{p}</b>
-            <small>{periodStart(p)}</small>
-          </div>
-        ))}
-        {periods.map((p) =>
+        {Array.from({ length: slots }, (_, s) => {
+          const min = start + s * SLOT
+          return (
+            <div key={s} className="tt-period" style={{ gridColumn: 1, gridRow: s + 2 }}>
+              {min % 60 === 0 && <small>{fmt(min)}</small>}
+            </div>
+          )
+        })}
+        {Array.from({ length: slots }, (_, s) =>
           days.map((d, i) => (
             <div
-              key={`${d}${p}`}
-              className="tt-cell"
-              style={{ gridColumn: i + 2, gridRow: p + 1 }}
+              key={`${d}${s}`}
+              className={`tt-cell ${s % 2 ? 'half' : ''}`}
+              style={{ gridColumn: i + 2, gridRow: s + 2 }}
             />
           )),
         )}
         {lectures.flatMap((l) =>
-          l.times
-            .filter((t) => days.includes(t.day))
+          l.timeSlots
+            .filter((t) => days.includes(t.dow))
             .map((t, k) => (
               <div
                 key={`${l.lecNo}-${k}`}
                 className={`tt-block c${colorOf.get(l.lecNo)}`}
                 style={{
-                  gridColumn: days.indexOf(t.day) + 2,
-                  gridRow: `${t.startPeriod + 1} / ${t.endPeriod + 2}`,
+                  gridColumn: days.indexOf(t.dow) + 2,
+                  gridRow: `${row(toMin(t.startTm))} / ${row(toMin(t.endTm))}`,
                 }}
-                title={`${l.courseName} (${l.section}) ${t.room} ${l.professorName}`}
+                title={`${l.crsNm} (${l.sectNo}) ${hm(t.startTm)}-${hm(t.endTm)} ${placeOf(t)} ${l.profNm}`}
               >
-                <b>{l.courseName}</b>
-                <span>{t.room}</span>
-                <span>{l.professorName}</span>
+                <b>{l.crsNm}</b>
+                <span>{placeOf(t)}</span>
+                <span>{l.profNm}</span>
               </div>
             )),
         )}

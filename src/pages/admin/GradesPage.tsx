@@ -1,4 +1,4 @@
-// GRD-02 성적 확정
+// GRD-02 성적 확정 (Backend feat/grade-confirm 브랜치 기준, 아직 main 에 없음)
 import { useState } from 'react'
 import { adminApi } from '../../api'
 import { errorMessage } from '../../api/client'
@@ -8,45 +8,52 @@ import {
   ErrorBox,
   GradeStatusBadge,
   Loading,
+  Notice,
   PageHeader,
   SemesterSelect,
   Stat,
 } from '../../components/ui'
 import { useAsync } from '../../hooks/useAsync'
-import type { GradeStatus } from '../../types'
+import { formatDateTime, GRD_STAT_LABEL } from '../../lib/format'
+import type { GrdStat } from '../../types'
 
-const FILTERS: { key: GradeStatus | 'ALL'; label: string }[] = [
-  { key: 'ALL', label: '전체' },
-  { key: 'NOT_ENTERED', label: '미입력' },
-  { key: 'IN_PROGRESS', label: '입력중' },
-  { key: 'SUBMITTED', label: '제출' },
-  { key: 'CONFIRMED', label: '확정' },
-]
+const STATS: GrdStat[] = ['NOT_ENTERED', 'ENTERING', 'SUBMITTED', 'CONFIRMED']
 
 export default function AdminGradesPage() {
   const toast = useToast()
-  const [semesterId, setSemesterId] = useState('')
-  const [filter, setFilter] = useState<GradeStatus | 'ALL'>('ALL')
-  const [busy, setBusy] = useState<number | null>(null)
+  const [semNo, setSemNo] = useState<number | null>(null)
+  const [filter, setFilter] = useState<GrdStat | null>(null)
+  const [checked, setChecked] = useState<Set<number>>(new Set())
+  const [busy, setBusy] = useState(false)
+  // 처음에는 비워서 보낸다: 서버가 현재 학기로 정한다
   const { data, error, loading, reload } = useAsync(
-    () => (semesterId ? adminApi.lectures(semesterId) : Promise.resolve(null)),
-    [semesterId],
+    () => adminApi.gradeStatus(semNo ?? undefined, filter ?? undefined),
+    [semNo, filter],
   )
-  const open = (data ?? []).filter((l) => l.status === 'OPEN')
-  const count = (s: GradeStatus) => open.filter((l) => l.gradeStatus === s).length
-  const shown = open.filter((l) => filter === 'ALL' || l.gradeStatus === filter)
+  const submitted = (data?.lectures ?? []).filter((l) => l.grdStat === 'SUBMITTED')
 
-  const confirmGrades = async (lecNo: number, name: string) => {
-    if (!confirm(`${name} 성적을 확정할까요? 확정 후에는 교수도 수정할 수 없습니다.`)) return
-    setBusy(lecNo)
+  const toggle = (lecNo: number) =>
+    setChecked((s) => {
+      const n = new Set(s)
+      if (n.has(lecNo)) n.delete(lecNo)
+      else n.add(lecNo)
+      return n
+    })
+
+  const confirmGrades = async (lecNos: number[]) => {
+    if (!lecNos.length) return
+    if (!confirm(`${lecNos.length}개 강의의 성적을 확정할까요? 확정 후에는 고칠 수 없습니다.`))
+      return
+    setBusy(true)
     try {
-      await adminApi.confirmGrades(lecNo)
+      await adminApi.confirmGrades(lecNos)
       toast('확정했습니다.')
+      setChecked(new Set())
       reload()
     } catch (e) {
       toast(errorMessage(e), 'error')
     } finally {
-      setBusy(null)
+      setBusy(false)
     }
   }
 
@@ -54,66 +61,101 @@ export default function AdminGradesPage() {
     <>
       <PageHeader
         title="성적 확정"
-        desc="교수가 제출한 강의의 성적을 확정합니다. 확정된 성적만 학생에게 보입니다."
-        actions={<SemesterSelect value={semesterId} onChange={setSemesterId} />}
+        actions={
+          <>
+            {data && <SemesterSelect value={semNo ?? data.semNo} onChange={setSemNo} />}
+            <button
+              className="btn btn-primary"
+              disabled={busy || checked.size === 0 || !data?.confirmable}
+              onClick={() => confirmGrades([...checked])}
+            >
+              선택 확정 ({checked.size})
+            </button>
+          </>
+        }
       />
       {error && <ErrorBox message={error} onRetry={reload} />}
       {loading && !data && <Loading />}
       {data && (
         <>
+          {!data.confirmable && (
+            <Notice>
+              아직 확정할 수 있는 시기가 아닙니다
+              {data.gradeEnd && ` (성적 입력 기간 종료: ${formatDateTime(data.gradeEnd)})`}.
+            </Notice>
+          )}
           <div className="stats">
-            <Stat label="미입력" value={count('NOT_ENTERED')} />
-            <Stat label="입력중" value={count('IN_PROGRESS')} />
-            <Stat label="제출 (확정 대기)" value={count('SUBMITTED')} />
-            <Stat label="확정" value={count('CONFIRMED')} />
+            {STATS.map((s) => (
+              <Stat key={s} label={GRD_STAT_LABEL[s]} value={data.counts[s] ?? 0} />
+            ))}
           </div>
           <div className="seg seg-lg">
-            {FILTERS.map((f) => (
-              <button
-                key={f.key}
-                className={filter === f.key ? 'on' : ''}
-                onClick={() => setFilter(f.key)}
-              >
-                {f.label}
+            <button className={filter === null ? 'on' : ''} onClick={() => setFilter(null)}>
+              전체
+            </button>
+            {STATS.map((s) => (
+              <button key={s} className={filter === s ? 'on' : ''} onClick={() => setFilter(s)}>
+                {GRD_STAT_LABEL[s]}
               </button>
             ))}
           </div>
-          {shown.length === 0 ? (
+          {data.lectures.length === 0 ? (
             <Empty>해당하는 강의가 없습니다.</Empty>
           ) : (
             <div className="table-wrap">
               <table className="table">
                 <thead>
                   <tr>
+                    <th>
+                      <input
+                        type="checkbox"
+                        aria-label="제출된 강의 모두 선택"
+                        disabled={submitted.length === 0}
+                        checked={
+                          submitted.length > 0 && submitted.every((l) => checked.has(l.lecNo))
+                        }
+                        onChange={(e) =>
+                          setChecked(
+                            e.target.checked ? new Set(submitted.map((l) => l.lecNo)) : new Set(),
+                          )
+                        }
+                      />
+                    </th>
                     <th>과목코드</th>
                     <th>과목명</th>
                     <th>분반</th>
                     <th>교수명</th>
                     <th className="num">수강 인원</th>
                     <th>성적상태</th>
-                    <th />
+                    <th>확정일시</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.map((l) => (
+                  {data.lectures.map((l) => (
                     <tr key={l.lecNo}>
-                      <td className="mono">{l.courseCode}</td>
-                      <td>{l.courseName}</td>
-                      <td>{l.section}</td>
-                      <td>{l.professorName}</td>
-                      <td className="num">{l.enrolledCount}</td>
                       <td>
-                        <GradeStatusBadge status={l.gradeStatus} />
+                        <input
+                          type="checkbox"
+                          disabled={l.grdStat !== 'SUBMITTED'}
+                          checked={checked.has(l.lecNo)}
+                          onChange={() => toggle(l.lecNo)}
+                        />
                       </td>
-                      <td className="row-actions">
-                        <button
-                          className="btn btn-sm btn-primary"
-                          disabled={l.gradeStatus !== 'SUBMITTED' || busy === l.lecNo}
-                          onClick={() => confirmGrades(l.lecNo, `${l.courseName}(${l.section})`)}
-                        >
-                          확정
-                        </button>
+                      <td className="mono">{l.crsCd}</td>
+                      <td>{l.crsNm}</td>
+                      <td>{l.sectNo}</td>
+                      <td>
+                        {l.grdStat === 'NOT_ENTERED' && l.profEmail ? (
+                          <a href={`mailto:${l.profEmail}`}>{l.profNm}</a>
+                        ) : (
+                          l.profNm
+                        )}
                       </td>
+                      <td className="num">{l.enrlCnt}</td>
+                      <td>
+                        <GradeStatusBadge status={l.grdStat} />
+                      </td>
+                      <td>{formatDateTime(l.cnfmDtm)}</td>
                     </tr>
                   ))}
                 </tbody>

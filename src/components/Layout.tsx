@@ -1,11 +1,13 @@
-import { lazy, Suspense, useState } from 'react'
-import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router'
+import { useState } from 'react'
+import type { FormEvent } from 'react'
+import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router'
+import { authApi } from '../api'
+import { errorMessage } from '../api/client'
 import { homePath, useAuth } from '../auth/AuthContext'
-import { USE_MOCK } from '../api/client'
-import { PERIOD_LABEL, ROLE_LABEL, semesterLabel } from '../lib/format'
-import type { Role, User } from '../types'
-
-const DemoBar = lazy(() => import('./DemoBar'))
+import { ROLE_LABEL, SCHD_TYPE_LABEL } from '../lib/format'
+import type { MyInfo, Role } from '../types'
+import { useToast } from './Toast'
+import { Field, Modal } from './ui'
 
 interface MenuItem {
   to: string
@@ -17,116 +19,185 @@ interface MenuGroup {
   items: MenuItem[]
 }
 
-function menuFor(user: User): MenuGroup[] {
+function menuFor(user: MyInfo): MenuGroup[] {
   if (user.role === 'ADMIN')
     return [
+      { title: '대시보드', items: [{ to: '/admin', label: '대시보드', end: true }] },
+      { title: '사용자', items: [{ to: '/admin/users', label: '사용자 관리' }] },
       {
-        title: '관리자',
+        title: '학사',
         items: [
-          { to: '/admin', label: '대시보드', end: true },
-          { to: '/admin/users', label: '사용자 관리' },
           { to: '/admin/semesters', label: '학기·학사일정' },
           { to: '/admin/courses', label: '과목 관리' },
-          { to: '/admin/lectures', label: '강의 개설 관리' },
-          { to: '/admin/enrollments', label: '수강신청 현황' },
-          { to: '/admin/grades', label: '성적 확정' },
+          { to: '/admin/lectures', label: '강의 개설' },
         ],
       },
+      { title: '수강신청', items: [{ to: '/admin/enrollments', label: '수강신청 현황' }] },
+      { title: '성적', items: [{ to: '/admin/grades', label: '성적 확정' }] },
     ]
-  const teaching: MenuGroup = {
-    title: user.role === 'PROFESSOR' ? '강의 운영' : '강의 운영 (조교)',
-    items: [{ to: '/teaching/lectures', label: '담당 강의 목록' }],
-  }
-  if (user.role === 'PROFESSOR') {
-    teaching.items.push({ to: '/teaching/search', label: '강의 검색' })
-    return [teaching]
-  }
-  const student: MenuGroup = {
-    title: '수강신청',
-    items: [
-      { to: '/student/timetable', label: '시간표' },
-      { to: '/student/lectures', label: '강의 검색' },
-      { to: '/student/cart', label: '장바구니' },
-      { to: '/student/enrollments', label: '수강신청 내역' },
-      { to: '/student/grades', label: '성적 조회' },
-    ],
-  }
-  return user.isAssistant ? [student, teaching] : [student]
+
+  if (user.role === 'PROFESSOR')
+    return [
+      { title: '담당 강의', items: [{ to: '/teaching/lectures', label: '담당 강의' }] },
+      { title: '강의 검색', items: [{ to: '/teaching/search', label: '강의 검색' }] },
+    ]
+
+  // 학생 (조교 포함). 학적상태로 신청할 수 없는 학생은 서버가 막는다
+  const groups: MenuGroup[] = [
+    {
+      title: '수강신청',
+      items: [
+        { to: '/student/registration', label: '장바구니·수강신청' },
+        { to: '/student/timetable', label: '시간표' },
+      ],
+    },
+    { title: '성적', items: [{ to: '/student/grades', label: '성적 조회' }] },
+  ]
+  if (user.ta)
+    groups.push({ title: '강의 운영', items: [{ to: '/teaching/lectures', label: '배정된 강의' }] })
+  return groups
 }
+
+const matches = (m: MenuItem, path: string) =>
+  m.end ? path === m.to : path === m.to || path.startsWith(m.to + '/')
 
 export function AppLayout() {
   const { user, period, logout } = useAuth()
   const navigate = useNavigate()
-  const [navOpen, setNavOpen] = useState(false)
   const location = useLocation()
+  const [pwOpen, setPwOpen] = useState(false)
   if (!user) return null
 
-  const onLogout = async () => {
-    await logout()
-    navigate('/login', { replace: true })
+  const menu = menuFor(user)
+  const active = menu.find((g) => g.items.some((m) => matches(m, location.pathname)))
+
+  const onLogout = () => {
+    logout()
+    navigate('/', { replace: true })
   }
 
   return (
     <div className="app">
-      {USE_MOCK && (
-        <Suspense fallback={null}>
-          <DemoBar />
-        </Suspense>
-      )}
       <header className="topbar">
-        <button
-          className="btn-icon nav-toggle"
-          onClick={() => setNavOpen((v) => !v)}
-          aria-label="메뉴"
-        >
-          ☰
-        </button>
-        <NavLink to={homePath(user)} className="brand">
-          수강신청·성적관리
-        </NavLink>
-        <div className="topbar-right">
-          {period && (
-            <span className="period-chip">
-              {semesterLabel(period.semesterId)}
-              {user.role === 'STUDENT' && (
-                <b>{period.type ? `${PERIOD_LABEL[period.type]} 기간` : '신청 기간 아님'}</b>
-              )}
+        <div className="topbar-inner">
+          <NavLink to={homePath(user)} className="brand">
+            숭실대학교
+          </NavLink>
+          <nav className="gnb">
+            {menu.map((g) => (
+              <Link
+                key={g.title}
+                to={g.items[0].to}
+                className={`gnb-link ${g === active ? 'active' : ''}`}
+              >
+                {g.title}
+              </Link>
+            ))}
+          </nav>
+          <div className="topbar-right">
+            {user.role === 'STUDENT' && (
+              <span className="period-chip">
+                <b>{period?.type ? `${SCHD_TYPE_LABEL[period.type]} 기간` : '신청 기간 아님'}</b>
+              </span>
+            )}
+            <span className="who">
+              {user.usrNm}
+              <small>
+                {ROLE_LABEL[user.role]}
+                {user.ta ? '·조교' : ''} · {user.usrNo}
+              </small>
             </span>
-          )}
-          <span className="who">
-            {user.name}
-            <small>
-              {ROLE_LABEL[user.role]}
-              {user.isAssistant ? '·조교' : ''} · {user.userNo}
-            </small>
-          </span>
-          <button className="btn btn-sm" onClick={onLogout}>
-            로그아웃
-          </button>
+            <button className="btn btn-sm" onClick={() => setPwOpen(true)}>
+              비밀번호 변경
+            </button>
+            <button className="btn btn-sm" onClick={onLogout}>
+              로그아웃
+            </button>
+          </div>
         </div>
-      </header>
-      <div className="shell">
-        <nav className={`sidebar ${navOpen ? 'open' : ''}`} onClick={() => setNavOpen(false)}>
-          {menuFor(user).map((g) => (
-            <div key={g.title} className="nav-group">
-              <div className="nav-title">{g.title}</div>
-              {g.items.map((m) => (
-                <NavLink key={m.to} to={m.to} end={m.end} className="nav-link">
+        {active && active.items.length > 1 && (
+          <nav className="lnb">
+            <div className="topbar-inner">
+              {active.items.map((m) => (
+                <NavLink key={m.to} to={m.to} end={m.end} className="lnb-link">
                   {m.label}
                 </NavLink>
               ))}
             </div>
-          ))}
-        </nav>
-        <main className="content" key={location.pathname.split('/').slice(0, 3).join('/')}>
-          <Outlet />
-        </main>
-      </div>
+          </nav>
+        )}
+      </header>
+      <main className="content" key={location.pathname.split('/').slice(0, 3).join('/')}>
+        <Outlet />
+      </main>
+      {pwOpen && <PasswordModal onClose={() => setPwOpen(false)} />}
     </div>
   )
 }
 
-/** 로그인·역할 검사. 조교 허용 시 학생 중 isAssistant 도 통과 */
+/** USR-01 ⑥ 비밀번호 변경 */
+function PasswordModal({ onClose }: { onClose: () => void }) {
+  const toast = useToast()
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr(null)
+    try {
+      await authApi.changePassword(current, next)
+      toast('비밀번호를 변경했습니다.')
+      onClose()
+    } catch (e) {
+      setErr(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="비밀번호 변경"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn" onClick={onClose}>
+            취소
+          </button>
+          <button className="btn btn-primary" form="pw-form" disabled={busy}>
+            변경
+          </button>
+        </>
+      }
+    >
+      <form id="pw-form" className="stack" onSubmit={submit}>
+        <Field label="현재 비밀번호">
+          <input
+            type="password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            autoComplete="current-password"
+            autoFocus
+          />
+        </Field>
+        <Field label="새 비밀번호">
+          <input
+            type="password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            autoComplete="new-password"
+          />
+        </Field>
+        {err && <p className="form-error">{err}</p>}
+      </form>
+    </Modal>
+  )
+}
+
+/** 로그인·역할 검사. allowAssistant 면 조교로 배정된 학생도 통과 */
 export function RequireRole({
   roles,
   allowAssistant,
@@ -137,9 +208,8 @@ export function RequireRole({
   const { user, loading } = useAuth()
   const location = useLocation()
   if (loading) return null
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />
-  const ok =
-    roles.includes(user.role) || (allowAssistant && user.role === 'STUDENT' && user.isAssistant)
+  if (!user) return <Navigate to="/" replace state={{ from: location.pathname }} />
+  const ok = roles.includes(user.role) || (allowAssistant && user.role === 'STUDENT' && user.ta)
   if (!ok) return <Navigate to={homePath(user)} replace />
   return <Outlet />
 }

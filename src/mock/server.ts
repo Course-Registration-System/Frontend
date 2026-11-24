@@ -1,58 +1,62 @@
-// 목 서버: request() 가 보낸 메서드·경로를 받아 백엔드처럼 응답한다.
-// 업무 규칙(검사 7종, 기간 판정, 성적 상태 전이)을 단위업무기술서 기준으로 흉내 낸다.
-import { ApiError } from '../api/client'
-import {
-  gradeAtLeast,
-  letterOf,
-  pointOf,
-  relativeRatio,
-  sumRatios,
-  totalScore,
-} from '../lib/grades'
-import { DAY_LABEL, semesterLabel } from '../lib/format'
+// 개발용 목 서버. request() 가 보낸 메서드·경로를 받아 백엔드 대신 응답한다.
+// 응답 형태는 백엔드 DTO 와 같고, 업무 규칙은 흉내만 낸다 (정원·중복 정도).
+import { ApiError, tokenStore } from '../api/client'
+import { CLASSROOMS, DEPARTMENTS } from '../lib/codes'
 import type {
-  Course,
-  GradeRow,
-  GradeSheet,
-  Lecture,
-  LectureForm,
-  LetterGrade,
-  MaxCreditRow,
-  Ratios,
-  RosterStudent,
-  Schedule,
-  Semester,
-  Term,
-  Transcript,
-  User,
-  UserForm,
+  CartResponse,
+  CourseCreateRequest,
+  CourseUpdateRequest,
+  EnrollmentResponse,
+  EnrollmentStatusResponse,
+  EvalMode,
+  GradeInput,
+  GradeReportResponse,
+  GradeSheetResponse,
+  GradeSheetStudent,
+  GrdStat,
+  LectureCreateRequest,
+  LecturePlanResponse,
+  LectureResponse,
+  LectureSearchItem,
+  LectureUpdateRequest,
+  MaxCreditItem,
+  PlanWeights,
+  PrerequisiteRequest,
+  ScheduleRequest,
+  SemesterRequest,
+  TimeSlot,
+  TimeSlotRequest,
+  UserCreateRequest,
+  UserResponse,
+  UserUpdateRequest,
 } from '../types'
-import { createSeed, DB_VERSION, SAMPLE_PDF, type Db, type DbLecture, type DbUser } from './db'
+import {
+  createSeed,
+  DB_VERSION,
+  type Db,
+  type DbEnrollment,
+  type DbLecture,
+  type DbUser,
+} from './db'
 
 const STORAGE_KEY = 'crs.mockdb'
-
-// 모듈 끝에서 초기화한다 (아래 상수들이 먼저 선언되어야 함)
-let db: Db
 
 function load(): Db {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Db
-      if (parsed.version === DB_VERSION) {
-        // 새로고침하면 blob URL 은 사라지므로 샘플 PDF 로 대체한다
-        for (const l of parsed.lectures)
-          if (l.syllabusUrl?.startsWith('blob:')) l.syllabusUrl = SAMPLE_PDF
-        return parsed
-      }
+      if (parsed.version === DB_VERSION) return parsed
     }
   } catch {
     /* 저장소 사용 불가 */
   }
-  const seed = createSeed()
-  seed.maxCredits['2026-2'] = computeMaxCredits(seed, '2026-2')
-  return seed
+  return createSeed()
 }
+
+const db: Db = load()
+/** 올린 계획서 파일 (새로고침하면 사라진다) */
+const planFiles = new Map<number, Blob>()
 
 function save() {
   try {
@@ -62,920 +66,961 @@ function save() {
   }
 }
 
-// ---- 데모 제어 (화면 상단 데모 바에서 사용) ----
-export const mockControl = {
-  today: () => db.today,
-  setToday: (d: string) => {
-    db.today = d
-    save()
-  },
-  schedules: () => db.schedules[currentSemester().id] ?? [],
-  reset: () => {
-    try {
-      localStorage.removeItem(STORAGE_KEY)
-    } catch {
-      /* 무시 */
-    }
-    db = load()
-  },
+/* ---------- 공통 ---------- */
+
+const fail = (status: number, code: string, detail: string): never => {
+  void code
+  throw new ApiError(status, detail)
+}
+const now = () => new Date()
+const nowLocal = () => {
+  const d = now()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+const inRange = (s: { startDtm: string; endDtm: string }) =>
+  new Date(s.startDtm) <= now() && now() < new Date(s.endDtm)
+
+const findUser = (no: string) => db.users.find((u) => u.usrNo === no)
+const findLecture = (lecNo: number) =>
+  db.lectures.find((l) => l.lecNo === lecNo) ??
+  fail(404, 'LECTURE_NOT_FOUND', '강의를 찾을 수 없습니다.')
+const findCourse = (cd: string) => db.courses.find((c) => c.crsCd === cd)
+const courseOf = (l: DbLecture) =>
+  findCourse(l.crsCd) ?? fail(404, 'COURSE_NOT_FOUND', '과목을 찾을 수 없습니다.')
+const deptNm = (no: number) => DEPARTMENTS.find((d) => d.deptNo === no)?.deptNm ?? ''
+const currentSemNo = () => (db.semesters.find((s) => s.current) ?? db.semesters[0]).semNo
+const enrolledOf = (lecNo: number) => db.enrollments.filter((e) => e.lecNo === lecNo)
+const semSchedules = (semNo: number) => db.schedules.filter((s) => s.semNo === semNo)
+
+/** 신청 대상 학기: 장바구니·신청·정정 일정이 아직 안 끝난 학기 중 가장 이른 것 */
+function registrationSemNo(): number | null {
+  const sems = [...new Set(db.schedules.map((s) => s.semNo))]
+    .map((semNo) => {
+      const ss = semSchedules(semNo).filter((s) => s.schdType !== 'GRADE')
+      return {
+        semNo,
+        end: Math.max(...ss.map((s) => new Date(s.endDtm).getTime())),
+        start: Math.min(...ss.map((s) => new Date(s.startDtm).getTime())),
+      }
+    })
+    .filter((x) => x.end > now().getTime())
+    .sort((a, b) => a.start - b.start)
+  return sems[0]?.semNo ?? null
+}
+const requireRegistration = () =>
+  registrationSemNo() ?? fail(409, 'NO_REGISTRATION_SEMESTER', '지금은 신청 대상 학기가 없습니다.')
+const periodOpen = (semNo: number, type: string) =>
+  semSchedules(semNo).some((s) => s.schdType === type && inRange(s))
+
+function toSlot(t: TimeSlotRequest): TimeSlot {
+  const roomNm = CLASSROOMS.find((r) => r.roomCd === t.roomCd)?.roomNm ?? null
+  return {
+    ...t,
+    startTm: t.startTm.length === 5 ? `${t.startTm}:00` : t.startTm,
+    endTm: t.endTm.length === 5 ? `${t.endTm}:00` : t.endTm,
+    roomNm,
+    place: roomNm ?? (t.clsType === 'ONLINE' ? '온라인' : '미배정'),
+  }
 }
 
-// ---- 공통 헬퍼 ----
-const fail = (status: number, message: string): never => {
-  throw new ApiError(status, message)
+function toLectureResponse(l: DbLecture): LectureResponse {
+  const c = courseOf(l)
+  return {
+    lecNo: l.lecNo,
+    crsCd: l.crsCd,
+    crsNm: c.crsNm,
+    crdt: c.crdt,
+    semNo: l.semNo,
+    profNo: l.profNo,
+    profNm: findUser(l.profNo)?.usrNm ?? '',
+    sectNo: l.sectNo,
+    cap: l.cap,
+    enrlCnt: enrolledOf(l.lecNo).length,
+    lecStat: l.lecStat,
+    engLec: l.engLec,
+    relGrdExmp: l.relGrdExmp,
+    timeSlots: l.timeSlots.map(toSlot),
+  }
 }
-const clone = <T>(v: T): T => (v === undefined ? v : JSON.parse(JSON.stringify(v)))
 
-const currentSemester = () => db.semesters.find((s) => s.current) ?? db.semesters[0]
-const TERM_ORDER: Record<Term, number> = { '1': 1, SUMMER: 2, '2': 3, WINTER: 4 }
-const semOrder = (id: string) => {
-  const s = db.semesters.find((x) => x.id === id)
-  if (!s) return 0
-  return s.year * 10 + TERM_ORDER[s.term]
+function toSearchItem(l: DbLecture): LectureSearchItem {
+  const r = toLectureResponse(l)
+  const c = courseOf(l)
+  return {
+    lecNo: r.lecNo,
+    crsCd: r.crsCd,
+    crsNm: r.crsNm,
+    sectNo: r.sectNo,
+    crdt: r.crdt,
+    cmplType: c.cmplType,
+    evalType: c.evalType,
+    rcmdYrLvl: c.rcmdYrLvl,
+    profNm: r.profNm,
+    engLec: r.engLec,
+    cap: r.cap,
+    enrlCnt: r.enrlCnt,
+    remaining: r.cap - r.enrlCnt,
+    full: r.enrlCnt >= r.cap,
+    planFile: l.hasPlan ? `plan-${l.lecNo}.pdf` : null,
+    timeSlots: r.timeSlots,
+  }
 }
 
-const userOf = (no: string) => db.users.find((u) => u.userNo === no)
-const courseOf = (code: string) =>
-  db.courses.find((c) => c.code === code) ?? fail(404, '과목을 찾을 수 없습니다.')
-const lectureOf = (lecNo: number) =>
-  db.lectures.find((l) => l.lecNo === lecNo) ?? fail(404, '강의를 찾을 수 없습니다.')
+function toEnrollment(e: DbEnrollment): EnrollmentResponse {
+  const l = findLecture(e.lecNo)
+  const r = toLectureResponse(l)
+  return {
+    lecNo: r.lecNo,
+    crsCd: r.crsCd,
+    crsNm: r.crsNm,
+    sectNo: r.sectNo,
+    crdt: r.crdt,
+    cmplType: courseOf(l).cmplType,
+    profNm: r.profNm,
+    retake: e.retake,
+    enrlDtm: e.enrlDtm,
+    timeSlots: r.timeSlots,
+  }
+}
 
-const enrolledIn = (lecNo: number) =>
-  db.enrollments.filter((e) => e.lecNo === lecNo && e.status === 'ENROLLED')
+const toTeachingStudent = (no: string) => {
+  const u = findUser(no)
+  return {
+    stdNo: no,
+    usrNm: u?.usrNm ?? '',
+    deptNm: u?.deptNm ?? '',
+    yrLvl: u?.yrLvl ?? 0,
+    email: u?.email ?? null,
+  }
+}
 
-function publicUser(u: DbUser): User {
+const toUser = (u: DbUser): UserResponse => {
   const { password: _pw, ...rest } = u
   void _pw
-  const cur = currentSemester().id
+  return rest
+}
+
+/* ---------- 성적 (목에서만 간단히 계산) ---------- */
+
+const LETTERS: [number, string, number][] = [
+  [97, 'A+', 4.5],
+  [94, 'A0', 4.3],
+  [90, 'A-', 4.0],
+  [87, 'B+', 3.5],
+  [84, 'B0', 3.3],
+  [80, 'B-', 3.0],
+  [77, 'C+', 2.5],
+  [74, 'C0', 2.3],
+  [70, 'C-', 2.0],
+  [67, 'D+', 1.5],
+  [64, 'D0', 1.3],
+  [60, 'D-', 1.0],
+  [0, 'F', 0],
+]
+
+function evalModeOf(l: DbLecture): EvalMode {
+  if (courseOf(l).evalType === 'PASS_FAIL') return 'PASS_FAIL'
+  return enrolledOf(l.lecNo).length >= 10 && !l.relGrdExmp && !l.engLec ? 'RELATIVE' : 'ABSOLUTE'
+}
+
+function sheetRow(e: DbEnrollment, l: DbLecture): GradeSheetStudent {
+  const w = l.weights ?? { midWt: 30, finWt: 40, hwWt: 20, attWt: 10 }
+  const entered = [e.midScr, e.finScr, e.hwScr, e.attScr].every((v) => v != null)
+  const rawTotal = entered
+    ? (e.midScr! * w.midWt + e.finScr! * w.finWt + e.hwScr! * w.hwWt + e.attScr! * w.attWt) / 100
+    : null
+  const totScr = rawTotal == null ? null : Math.round(rawTotal)
+  const pf = courseOf(l).evalType === 'PASS_FAIL'
+  const hit = totScr == null ? null : LETTERS.find(([min]) => totScr >= min)!
+  const ltrGrd = hit ? (pf ? (totScr! >= 60 ? 'P' : 'F') : hit[1]) : null
   return {
-    ...rest,
-    isAssistant:
-      u.role === 'STUDENT' &&
-      db.lectures.some((l) => l.semesterId === cur && l.assistants.includes(u.userNo)),
+    stdNo: e.stdNo,
+    usrNm: findUser(e.stdNo)?.usrNm ?? '',
+    retake: e.retake,
+    midScr: e.midScr,
+    finScr: e.finScr,
+    hwScr: e.hwScr,
+    attScr: e.attScr,
+    rawTotal,
+    group: null,
+    totScr,
+    ltrGrd,
+    grdPt: hit && !pf ? hit[2] : null,
+    entered,
   }
 }
 
-function view(l: DbLecture): Lecture {
-  const c = courseOf(l.courseCode)
+function gradeSheet(l: DbLecture): GradeSheetResponse {
+  const c = courseOf(l)
+  const mode = evalModeOf(l)
+  const n = enrolledOf(l.lecNo).length
   return {
     lecNo: l.lecNo,
-    semesterId: l.semesterId,
-    courseCode: c.code,
-    courseName: c.name,
-    section: l.section,
-    credits: c.credits,
-    category: c.category,
-    deptName: c.deptName,
-    targetGrade: c.targetGrade,
-    gradingType: c.gradingType,
-    professorNo: l.professorNo,
-    professorName: userOf(l.professorNo)?.name ?? '-',
-    capacity: l.capacity,
-    enrolledCount: enrolledIn(l.lecNo).length,
-    times: l.times,
-    isEnglish: l.isEnglish,
-    excludeRelative: l.excludeRelative,
-    status: l.status,
-    gradeStatus: l.gradeStatus,
-    syllabusUrl: l.syllabusUrl,
+    crsCd: l.crsCd,
+    crsNm: c.crsNm,
+    sectNo: l.sectNo,
+    grdStat: l.grdStat,
+    editable: periodOpen(l.semNo, 'GRADE') && l.grdStat !== 'CONFIRMED' && l.lecStat === 'OPEN',
+    evalMode: mode,
+    weights: l.weights,
+    counts:
+      mode === 'PASS_FAIL'
+        ? null
+        : mode === 'RELATIVE'
+          ? {
+              enrolled: n,
+              aCnt: l.aCnt ?? Math.floor(n * 0.4),
+              abCnt: l.abCnt ?? Math.floor(n * 0.8),
+              aLimit: Math.floor(n * 0.4),
+              abLimit: Math.floor(n * 0.8),
+            }
+          : { enrolled: n, aCnt: l.aCnt, abCnt: l.abCnt, aLimit: n, abLimit: n },
+    tieAtBoundary: false,
+    students: enrolledOf(l.lecNo)
+      .sort((a, b) => a.stdNo.localeCompare(b.stdNo))
+      .map((e) => sheetRow(e, l)),
   }
 }
 
-const roster = (u: DbUser): RosterStudent => ({
-  studentNo: u.userNo,
-  name: u.name,
-  deptName: u.deptName ?? '',
-  grade: u.grade ?? 0,
-  email: u.email ?? '',
-})
-
-// ---- 기간 판정 ----
-const scheduleOf = (semId: string, type: Schedule['type']) =>
-  (db.schedules[semId] ?? []).filter((s) => s.type === type)
-
-function studentPeriod(grade: number) {
-  const sem = currentSemester().id
-  return (db.schedules[sem] ?? []).find(
-    (s) =>
-      s.type !== 'GRADE_INPUT' &&
-      s.targetGrades.includes(grade) &&
-      s.startDate <= db.today &&
-      db.today <= s.endDate,
-  )
-}
-
-function adjustEnded(semId: string) {
-  const adj = scheduleOf(semId, 'ADJUST')
-  if (adj.length === 0) return semOrder(semId) < semOrder(currentSemester().id)
-  return adj.every((s) => db.today > s.endDate)
-}
-
-function gradeInputOpen(semId: string) {
-  return scheduleOf(semId, 'GRADE_INPUT').some(
-    (s) => s.startDate <= db.today && db.today <= s.endDate,
-  )
-}
-
-// ---- 성적 헬퍼 ----
-/** 확정된 과목별 최고 등급 (재수강 반영 전 이력 전체) */
-function bestLetter(studentNo: string, courseCode: string): LetterGrade | null {
-  let best: LetterGrade | null = null
-  for (const e of db.enrollments) {
-    if (e.studentNo !== studentNo || e.status !== 'ENROLLED' || !e.letter) continue
-    const l = lectureOf(e.lecNo)
-    if (l.courseCode !== courseCode || l.gradeStatus !== 'CONFIRMED') continue
-    if (!best || gradeAtLeast(e.letter, best)) best = e.letter
-  }
-  return best
-}
-
-interface Taken {
-  semesterId: string
-  course: Course
-  letter: LetterGrade
-  isRetake: boolean
-}
-function takenCourses(studentNo: string): Taken[] {
-  return db.enrollments
-    .filter((e) => e.studentNo === studentNo && e.status === 'ENROLLED' && e.letter)
-    .map((e) => ({ e, l: lectureOf(e.lecNo) }))
-    .filter(({ l }) => l.gradeStatus === 'CONFIRMED')
-    .map(({ e, l }) => ({
-      semesterId: l.semesterId,
-      course: courseOf(l.courseCode),
-      letter: e.letter!,
-      isRetake: e.isRetake,
-    }))
-}
-
-function gpa(list: Taken[]) {
-  const graded = list.filter((x) => x.course.gradingType === 'GRADE')
-  const cr = graded.reduce((s, x) => s + x.course.credits, 0)
-  if (!cr) return null
-  const pts = graded.reduce((s, x) => s + (pointOf(x.letter) ?? 0) * x.course.credits, 0)
-  return Math.round((pts / cr) * 100) / 100
-}
-const earned = (list: Taken[]) =>
-  list.filter((x) => x.letter !== 'F').reduce((s, x) => s + x.course.credits, 0)
-
-// 시드 시점에도 쓰므로 전역 db 대신 인자로 받은 src 만 본다
-function computeMaxCredits(src: Db, semId: string): MaxCreditRow[] {
-  const sem = src.semesters.find((s) => s.id === semId)!
-  const seasonal = sem.term === 'SUMMER' || sem.term === 'WINTER'
-  const order = (s: Semester) => s.year * 10 + TERM_ORDER[s.term]
-  const prevRegular = src.semesters
-    .filter((s) => (s.term === '1' || s.term === '2') && order(s) < order(sem))
-    .sort((a, b) => order(b) - order(a))[0]
-  return src.users
-    .filter((u) => u.role === 'STUDENT' && u.active)
-    .map((u) => {
-      let prevGpa: number | null = null
-      if (prevRegular) {
-        const rows = src.enrollments
-          .filter((e) => e.studentNo === u.userNo && e.status === 'ENROLLED' && e.letter)
-          .map((e) => ({ e, l: src.lectures.find((l) => l.lecNo === e.lecNo)! }))
-          .filter(({ l }) => l.semesterId === prevRegular.id)
-          .map(({ e, l }) => ({ c: src.courses.find((c) => c.code === l.courseCode)!, e }))
-          .filter(({ c }) => c.gradingType === 'GRADE')
-        const cr = rows.reduce((s, r) => s + r.c.credits, 0)
-        if (cr)
-          prevGpa =
-            Math.round(
-              (rows.reduce((s, r) => s + (pointOf(r.e.letter!) ?? 0) * r.c.credits, 0) / cr) * 100,
-            ) / 100
-      }
-      // 가정: 정규학기 기본 18학점, 직전 정규학기 평점 4.0 이상 21학점. 계절학기 6학점
-      const maxCredits = seasonal ? 6 : prevGpa != null && prevGpa >= 4.0 ? 21 : 18
-      return { studentNo: u.userNo, name: u.name, grade: u.grade ?? 0, prevGpa, maxCredits }
-    })
-}
-
-const overlaps = (a: DbLecture, b: DbLecture) =>
-  a.times.some((x) =>
-    b.times.some(
-      (y) => x.day === y.day && x.startPeriod <= y.endPeriod && y.startPeriod <= x.endPeriod,
-    ),
-  )
-
-const isChapel = (l: DbLecture) => courseOf(l.courseCode).category === '채플'
-
-function myEnrolledLectures(studentNo: string, semId: string) {
-  return db.enrollments
-    .filter((e) => e.studentNo === studentNo && e.status === 'ENROLLED')
-    .map((e) => ({ e, l: lectureOf(e.lecNo) }))
-    .filter(({ l }) => l.semesterId === semId && l.status === 'OPEN')
-}
-
-/** REG-03 검사 ③~⑧. 관리자 직권 추가는 중복 검사만 한다 */
-function checkEnroll(studentNo: string, l: DbLecture, force = false) {
-  const c = courseOf(l.courseCode)
-  if (l.status !== 'OPEN') fail(400, '폐강된 강의입니다.')
-  const mine = myEnrolledLectures(studentNo, l.semesterId)
-  // ③ 같은 과목 중복
-  if (mine.some(({ l: x }) => x.courseCode === l.courseCode))
-    fail(400, `이미 같은 과목(${c.name})을 신청했습니다.`)
-  // ④ 재수강 조건
-  const best = bestLetter(studentNo, l.courseCode)
-  if (best && (best === 'P' || gradeAtLeast(best, 'B0')))
-    fail(400, `이미 ${best} 로 이수한 과목입니다. C+ 이하 과목만 재수강할 수 있습니다.`)
-  const isRetake = best != null
-  if (force) return isRetake
-  // ⑤ 정원
-  if (enrolledIn(l.lecNo).length >= l.capacity) fail(400, '정원이 마감된 강의입니다.')
-  // ⑥ 시간 중복
-  const clash = mine.find(({ l: x }) => overlaps(x, l))
-  if (clash) {
-    const cc = courseOf(clash.l.courseCode)
-    fail(400, `시간이 겹치는 강의가 있습니다: ${cc.name} (${clash.l.section}분반)`)
-  }
-  // ⑦ 최대학점 (채플 제외)
-  const max = db.maxCredits[l.semesterId]?.find((r) => r.studentNo === studentNo)?.maxCredits
-  if (max == null) fail(400, '최대학점이 산정되지 않았습니다. 관리자에게 문의하세요.')
-  const now = mine
-    .filter(({ l: x }) => !isChapel(x))
-    .reduce((s, { l: x }) => s + courseOf(x.courseCode).credits, 0)
-  const add = isChapel(l) ? 0 : c.credits
-  if (now + add > max!)
-    fail(400, `최대 신청 가능 학점(${max}학점)을 넘습니다. 현재 ${now}학점 + ${add}학점`)
-  // ⑧ 선수과목
-  for (const p of c.prerequisites) {
-    const got = bestLetter(studentNo, p.courseCode)
-    if (!got || !gradeAtLeast(got, p.minGrade))
-      fail(
-        400,
-        `선수과목 ${courseOf(p.courseCode).name}을(를) ${p.minGrade} 이상으로 이수해야 합니다.`,
-      )
-  }
-  return isRetake
-}
-
-// ---- 성적표 ----
-function gradeSheet(l: DbLecture): GradeSheet {
-  const c = courseOf(l.courseCode)
-  let lockedReason: string | undefined
-  if (l.status === 'CLOSED') lockedReason = '폐강된 강의입니다.'
-  else if (l.gradeStatus === 'CONFIRMED') lockedReason = '성적이 확정되어 수정할 수 없습니다.'
-  else if (!gradeInputOpen(l.semesterId)) lockedReason = '성적 입력 기간이 아닙니다.'
-  else if (c.gradingType === 'GRADE' && !l.ratios)
-    lockedReason = '계획서 탭에서 반영 비율을 먼저 등록해야 합니다.'
-  const rows: GradeRow[] = enrolledIn(l.lecNo).map((e) => {
-    const u = userOf(e.studentNo)!
+function gradeReport(stdNo: string): GradeReportResponse {
+  const bySem = new Map<number, ReturnType<typeof row>[]>()
+  function row(e: DbEnrollment, l: DbLecture) {
+    const c = courseOf(l)
+    const r = sheetRow(e, l)
     return {
-      enrollmentId: e.id,
-      studentNo: u.userNo,
-      name: u.name,
-      deptName: u.deptName ?? '',
-      grade: u.grade ?? 0,
-      scores: e.scores,
-      pf: e.pf,
+      lecNo: l.lecNo,
+      crsCd: l.crsCd,
+      crsNm: c.crsNm,
+      crdt: c.crdt,
+      cmplType: c.cmplType,
+      evalType: c.evalType,
+      ltrGrd: r.ltrGrd ?? 'F',
+      gradePoint: r.grdPt,
+      retake: e.retake,
+      counted: true,
     }
-  })
-  rows.sort((a, b) => a.studentNo.localeCompare(b.studentNo))
+  }
+  for (const e of db.enrollments.filter((x) => x.stdNo === stdNo)) {
+    const l = findLecture(e.lecNo)
+    if (l.grdStat !== 'CONFIRMED') continue
+    bySem.set(l.semNo, [...(bySem.get(l.semNo) ?? []), row(e, l)])
+  }
+  const gpa = (rows: ReturnType<typeof row>[]) => {
+    const g = rows.filter((r) => r.gradePoint != null)
+    const cr = g.reduce((s, r) => s + r.crdt, 0)
+    return cr
+      ? Math.round((g.reduce((s, r) => s + r.gradePoint! * r.crdt, 0) / cr) * 100) / 100
+      : null
+  }
+  const semesters = db.semesters
+    .filter((s) => bySem.has(s.semNo))
+    .map((s) => ({
+      semNo: s.semNo,
+      yr: s.yr,
+      semType: s.semType,
+      grades: bySem.get(s.semNo)!,
+      gpa: gpa(bySem.get(s.semNo)!),
+    }))
+  const all = semesters.flatMap((s) => s.grades)
   return {
-    lecNo: l.lecNo,
-    gradingType: c.gradingType,
-    ratios: l.ratios,
-    excludeRelative: l.excludeRelative,
-    gradeStatus: l.gradeStatus,
-    editable: !lockedReason,
-    lockedReason,
-    rows,
+    semesters,
+    cumulativeGpa: gpa(all),
+    earnedCredits: all.filter((r) => r.ltrGrd !== 'F').reduce((s, r) => s + r.crdt, 0),
   }
 }
 
-// ---- 라우터 ----
-interface Ctx {
-  params: Record<string, string>
-  query: URLSearchParams
-  body: unknown
-  user: DbUser | null
-}
-type Handler = (ctx: Ctx) => unknown
-const routes: { method: string; re: RegExp; keys: string[]; handler: Handler }[] = []
-function route(method: string, path: string, handler: Handler) {
-  const keys: string[] = []
-  const re = new RegExp(
-    '^' +
-      path.replace(/:(\w+)/g, (_, k) => {
-        keys.push(k)
-        return '([^/]+)'
-      }) +
-      '$',
-  )
-  routes.push({ method, re, keys, handler })
-}
+/* ---------- 라우팅 ---------- */
 
-const needUser = (c: Ctx) => c.user ?? fail(401, '로그인이 필요합니다.')
-const needRole = (c: Ctx, ...roles: User['role'][]) => {
-  const u = needUser(c)
-  if (!roles.includes(u.role)) fail(403, '권한이 없습니다.')
-  return u
+type Ctx = {
+  params: string[]
+  query: Record<string, string>
+  body: unknown
+  me: DbUser | undefined
 }
-const semParam = (c: Ctx) => c.query.get('semesterId') || currentSemester().id
+type Handler = (c: Ctx) => unknown
+const routes: [string, RegExp, Handler][] = []
+const on = (method: string, pattern: string, h: Handler) =>
+  routes.push([method, new RegExp('^' + pattern.replace(/\{\w+\}/g, '([^/]+)') + '$'), h])
+
+const auth = (c: Ctx) => c.me ?? fail(401, 'UNAUTHENTICATED', '로그인이 필요합니다.')
+const body = <T>(c: Ctx) => c.body as T
+const num = (s: string | undefined) => (s ? Number(s) : undefined)
+const student = (c: Ctx) => {
+  const me = auth(c)
+  if (me.role !== 'STUDENT') fail(403, 'FORBIDDEN', '권한이 없습니다.')
+  return me
+}
+const admin = (c: Ctx) => {
+  const me = auth(c)
+  if (me.role !== 'ADMIN') fail(403, 'FORBIDDEN', '권한이 없습니다.')
+  return me
+}
+/** 담당 교수 또는 조교 */
+const teaching = (c: Ctx, profOnly = false) => {
+  const me = auth(c)
+  const l = findLecture(Number(c.params[0]))
+  const ok = l.profNo === me.usrNo || (!profOnly && l.assistants.includes(me.usrNo))
+  if (!ok) fail(403, 'FORBIDDEN', '권한이 없습니다.')
+  return l
+}
 
 // USR-01
-route('POST', '/api/auth/login', ({ body }) => {
-  const { userNo, password } = body as { userNo: string; password: string }
-  const u = userOf(userNo?.trim())
-  if (!u || u.password !== password) fail(401, '사용자번호 또는 비밀번호가 올바르지 않습니다.')
-  if (!u!.active) fail(403, '비활성화된 계정입니다. 관리자에게 문의하세요.')
-  return { token: `mock-${u!.userNo}`, user: publicUser(u!) }
+on('POST', '/api/auth/login', (c) => {
+  const { usrNo, password } = body<{ usrNo: string; password: string }>(c)
+  const u = findUser(usrNo)
+  if (!u || u.password !== password)
+    fail(401, 'LOGIN_FAILED', '로그인 ID 또는 비밀번호가 올바르지 않습니다.')
+  if (u!.acctStat !== 'ACTIVE') fail(403, 'ACCOUNT_INACTIVE', '비활성화된 계정입니다.')
+  return { accessToken: 'mock-' + u!.usrNo, user: myInfo(u!) }
 })
-route('GET', '/api/auth/me', (c) => publicUser(needUser(c)))
-route('POST', '/api/auth/logout', () => undefined)
+const myInfo = (u: DbUser) => ({
+  usrNo: u.usrNo,
+  usrNm: u.usrNm,
+  role: u.role,
+  ta: u.role === 'STUDENT' && db.lectures.some((l) => l.assistants.includes(u.usrNo)),
+})
+on('GET', '/api/auth/me', (c) => myInfo(auth(c)))
+on('PATCH', '/api/auth/password', (c) => {
+  const me = auth(c)
+  const { currentPassword, newPassword } = body<{ currentPassword: string; newPassword: string }>(c)
+  if (me.password !== currentPassword)
+    fail(400, 'PASSWORD_MISMATCH', '현재 비밀번호가 올바르지 않습니다.')
+  if (!newPassword) fail(400, 'INVALID_INPUT', 'newPassword: 공백일 수 없습니다')
+  me.password = newPassword
+})
 
 // 공통
-route('GET', '/api/semesters', (c) => {
-  needUser(c)
-  return [...db.semesters].sort((a, b) => semOrder(b.id) - semOrder(a.id))
-})
-route('GET', '/api/periods/current', (c) => {
-  const u = needUser(c)
-  const p = u.role === 'STUDENT' ? studentPeriod(u.grade ?? 0) : undefined
-  return {
-    semesterId: currentSemester().id,
-    type: p ? p.type : null,
-    startDate: p?.startDate,
-    endDate: p?.endDate,
-    today: db.today,
-  }
-})
+on('GET', '/api/health', () => ({ status: 'ok', time: new Date().toISOString() }))
+on('GET', '/api/semesters', (c) => (auth(c), db.semesters))
+on('GET', '/api/semesters/{semNo}/schedules', (c) => (auth(c), semSchedules(Number(c.params[0]))))
 
 // REG-01
-route('GET', '/api/lectures', (c) => {
-  needUser(c)
+on('GET', '/api/lectures', (c) => {
+  auth(c)
   const q = c.query
-  const sem = semParam(c)
-  return db.lectures
-    .filter((l) => l.semesterId === sem && l.status === 'OPEN')
-    .map(view)
-    .filter((l) => !q.get('deptName') || l.deptName === q.get('deptName'))
-    .filter((l) => !q.get('targetGrade') || String(l.targetGrade) === q.get('targetGrade'))
-    .filter((l) => !q.get('category') || l.category === q.get('category'))
-    .filter((l) => !q.get('courseName') || l.courseName.includes(q.get('courseName')!))
-    .filter((l) => !q.get('professorName') || l.professorName.includes(q.get('professorName')!))
-    .sort((a, b) => a.courseCode.localeCompare(b.courseCode) || a.section.localeCompare(b.section))
+  const semNo = num(q.semNo) ?? registrationSemNo() ?? currentSemNo()
+  const page = num(q.page) ?? 0
+  const size = num(q.size) ?? 20
+  const all = db.lectures
+    .filter((l) => l.semNo === semNo && l.lecStat === 'OPEN')
+    .map(toSearchItem)
+    .filter((l) => {
+      const course = findCourse(l.crsCd)!
+      if (q.deptNo && String(course.deptNo) !== q.deptNo) return false
+      if (q.yrLvl && l.rcmdYrLvl != null && String(l.rcmdYrLvl) !== q.yrLvl) return false
+      if (q.cmplType && l.cmplType !== q.cmplType) return false
+      if (q.crsNm && !l.crsNm.includes(q.crsNm)) return false
+      if (q.profNm && !l.profNm.includes(q.profNm)) return false
+      return true
+    })
+  return { semNo, page, size, total: all.length, items: all.slice(page * size, (page + 1) * size) }
 })
 
-// REG-02 장바구니
-const needPeriod = (u: DbUser, ...types: Schedule['type'][]) => {
-  const p = studentPeriod(u.grade ?? 0)
-  if (!p || !types.includes(p.type)) {
-    const names = {
-      CART: '장바구니',
-      REGISTER: '수강신청',
-      ADJUST: '정정',
-      GRADE_INPUT: '성적입력',
-    }
-    fail(400, `${types.map((t) => names[t]).join('·')} 기간이 아닙니다.`)
+// REG-02
+function cartOf(me: DbUser): CartResponse {
+  const semNo = requireRegistration()
+  const items = db.cart
+    .filter((x) => x.stdNo === me.usrNo && findLecture(x.lecNo).semNo === semNo)
+    .map((x) => {
+      const r = toSearchItem(findLecture(x.lecNo))
+      return {
+        lecNo: r.lecNo,
+        crsCd: r.crsCd,
+        crsNm: r.crsNm,
+        sectNo: r.sectNo,
+        crdt: r.crdt,
+        cmplType: r.cmplType,
+        profNm: r.profNm,
+        cap: r.cap,
+        enrlCnt: r.enrlCnt,
+        cartCnt: db.cart.filter((y) => y.lecNo === x.lecNo).length,
+        timeSlots: r.timeSlots,
+      }
+    })
+  return {
+    semNo,
+    items,
+    cartCredits: items.filter((i) => i.cmplType !== 'CHAPEL').reduce((s, i) => s + i.crdt, 0),
+    maxCredit: db.maxCredits[semNo]?.find((m) => m.stdNo === me.usrNo)?.maxCrdt ?? 18,
   }
-  return p!
 }
-route('GET', '/api/me/cart', (c) => {
-  const u = needRole(c, 'STUDENT')
-  const sem = semParam(c)
-  return db.cart
-    .filter((x) => x.studentNo === u.userNo)
-    .map((x) => lectureOf(x.lecNo))
-    .filter((l) => l.semesterId === sem && l.status === 'OPEN')
-    .map(view)
+on('GET', '/api/cart', (c) => cartOf(student(c)))
+on('POST', '/api/cart', (c) => {
+  const me = student(c)
+  const semNo = requireRegistration()
+  if (!periodOpen(semNo, 'CART')) fail(409, 'CART_CLOSED', '장바구니 기간이 아닙니다.')
+  const { lecNo } = body<{ lecNo: number }>(c)
+  findLecture(lecNo)
+  if (db.cart.some((x) => x.stdNo === me.usrNo && x.lecNo === lecNo))
+    fail(409, 'DUPLICATE_CART', '이미 장바구니에 담은 강의입니다.')
+  db.cart.push({ stdNo: me.usrNo, lecNo, addedAt: nowLocal() })
+  return cartOf(me)
 })
-route('POST', '/api/me/cart', (c) => {
-  const u = needRole(c, 'STUDENT')
-  needPeriod(u, 'CART')
-  const { lecNo } = c.body as { lecNo: number }
-  const l = lectureOf(lecNo)
-  if (l.semesterId !== currentSemester().id || l.status !== 'OPEN')
-    fail(400, '담을 수 없는 강의입니다.')
-  if (db.cart.some((x) => x.studentNo === u.userNo && x.lecNo === lecNo))
-    fail(400, '이미 장바구니에 담긴 강의입니다.')
-  if (
-    db.cart.some((x) => x.studentNo === u.userNo && lectureOf(x.lecNo).courseCode === l.courseCode)
-  )
-    fail(400, '같은 과목의 다른 분반이 이미 장바구니에 있습니다.')
-  db.cart.push({ studentNo: u.userNo, lecNo })
-})
-route('DELETE', '/api/me/cart/:lecNo', (c) => {
-  const u = needRole(c, 'STUDENT')
-  needPeriod(u, 'CART')
-  const lecNo = Number(c.params.lecNo)
-  db.cart = db.cart.filter((x) => !(x.studentNo === u.userNo && x.lecNo === lecNo))
-})
-route('GET', '/api/me/max-credits', (c) => {
-  const u = needRole(c, 'STUDENT')
-  const row = db.maxCredits[semParam(c)]?.find((r) => r.studentNo === u.userNo)
-  return { maxCredits: row?.maxCredits ?? null }
+on('DELETE', '/api/cart/{lecNo}', (c) => {
+  const me = student(c)
+  if (!periodOpen(requireRegistration(), 'CART'))
+    fail(409, 'CART_CLOSED', '장바구니 기간이 아닙니다.')
+  db.cart = db.cart.filter((x) => !(x.stdNo === me.usrNo && x.lecNo === Number(c.params[0])))
 })
 
-// REG-03 수강신청
-route('GET', '/api/me/enrollments', (c) => {
-  const u = needRole(c, 'STUDENT')
-  return myEnrolledLectures(u.userNo, semParam(c)).map(({ e, l }) => ({
-    enrollmentId: e.id,
-    lecture: view(l),
-    isRetake: e.isRetake,
-  }))
+// REG-03·04
+on('GET', '/api/enrollments', (c) => {
+  const me = student(c)
+  const semNo = requireRegistration()
+  return db.enrollments
+    .filter((e) => e.stdNo === me.usrNo && findLecture(e.lecNo).semNo === semNo)
+    .map(toEnrollment)
 })
-route('POST', '/api/me/enrollments', (c) => {
-  const u = needRole(c, 'STUDENT')
-  // ② 기간
-  const p = needPeriod(u, 'REGISTER', 'ADJUST')
-  const { lecNo } = c.body as { lecNo: number }
-  const l = lectureOf(lecNo)
-  if (l.semesterId !== currentSemester().id) fail(400, '현재 학기 강의가 아닙니다.')
-  if (p.type === 'REGISTER' && !db.cart.some((x) => x.studentNo === u.userNo && x.lecNo === lecNo))
-    fail(400, '수강신청 기간에는 장바구니에 담은 강의만 신청할 수 있습니다.')
-  const isRetake = checkEnroll(u.userNo, l)
-  const e = {
-    id: db.seq++,
-    studentNo: u.userNo,
+function doEnroll(stdNo: string, lecNo: number, by: 'STUDENT' | 'ADMIN') {
+  const l = findLecture(lecNo)
+  if (l.lecStat === 'CLOSED') fail(409, 'LECTURE_CLOSED', '폐강된 강의입니다.')
+  if (db.enrollments.some((e) => e.stdNo === stdNo && e.lecNo === lecNo))
+    fail(409, 'ALREADY_ENROLLED_COURSE', '같은 과목을 이미 신청했습니다.')
+  if (by === 'STUDENT' && enrolledOf(lecNo).length >= l.cap)
+    fail(409, 'LECTURE_FULL', '정원이 찼습니다.')
+  const e: DbEnrollment = {
+    stdNo,
     lecNo,
-    status: 'ENROLLED' as const,
-    isRetake,
-    scores: { midterm: null, final: null, assignment: null, attendance: null },
-    pf: null,
-    letter: null,
+    enrlDtm: nowLocal(),
+    retake: false,
+    procType: by,
+    midScr: null,
+    finScr: null,
+    hwScr: null,
+    attScr: null,
   }
   db.enrollments.push(e)
-  db.cart = db.cart.filter((x) => !(x.studentNo === u.userNo && x.lecNo === lecNo))
-  return { enrollmentId: e.id, lecture: view(l), isRetake }
-})
-route('DELETE', '/api/me/enrollments/:id', (c) => {
-  const u = needRole(c, 'STUDENT')
-  needPeriod(u, 'REGISTER', 'ADJUST')
-  const e = db.enrollments.find((x) => x.id === Number(c.params.id) && x.studentNo === u.userNo)
-  if (!e || e.status !== 'ENROLLED') fail(404, '신청 내역을 찾을 수 없습니다.')
-  e!.status = 'CANCELLED'
-})
-
-// GRD-03 성적 조회
-route('GET', '/api/me/grade-semesters', (c) => {
-  const u = needRole(c, 'STUDENT')
-  const ids = [...new Set(takenCourses(u.userNo).map((t) => t.semesterId))]
-  return ids.sort((a, b) => semOrder(b) - semOrder(a))
-})
-route('GET', '/api/me/grades', (c): Transcript => {
-  const u = needRole(c, 'STUDENT')
-  const sem = semParam(c)
-  const all = takenCourses(u.userNo)
-  const thisSem = all.filter((t) => t.semesterId === sem)
-  // 누적: 해당 학기까지, 같은 과목은 가장 최근 이력만 반영
-  const upTo = all
-    .filter((t) => semOrder(t.semesterId) <= semOrder(sem))
-    .sort((a, b) => semOrder(b.semesterId) - semOrder(a.semesterId))
-  const seen = new Set<string>()
-  const latest = upTo.filter((t) => {
-    if (seen.has(t.course.code)) return false
-    seen.add(t.course.code)
-    return true
-  })
-  return {
-    semesterId: sem,
-    rows: thisSem.map((t) => ({
-      courseCode: t.course.code,
-      courseName: t.course.name,
-      credits: t.course.credits,
-      gradingType: t.course.gradingType,
-      letter: t.letter,
-      point: pointOf(t.letter, t.course.gradingType),
-      isRetake: t.isRetake,
-    })),
-    semesterGpa: gpa(thisSem),
-    semesterCredits: earned(thisSem),
-    cumulativeGpa: gpa(latest),
-    cumulativeCredits: earned(latest),
-  }
-})
-
-// LEC-01~04, GRD-01
-function access(c: Ctx, lecNo: number) {
-  const u = needUser(c)
-  const l = lectureOf(lecNo)
-  if (u.role === 'PROFESSOR' && l.professorNo === u.userNo)
-    return { u, l, role: 'PROFESSOR' as const }
-  if (u.role === 'STUDENT' && l.assistants.includes(u.userNo))
-    return { u, l, role: 'ASSISTANT' as const }
-  return fail(403, '담당 강의가 아닙니다.')
+  return e
 }
-route('GET', '/api/teaching/lectures', (c) => {
-  const u = needRole(c, 'PROFESSOR', 'STUDENT')
-  const sem = semParam(c)
-  return db.lectures
-    .filter((l) => l.semesterId === sem)
-    .filter((l) =>
-      u.role === 'PROFESSOR' ? l.professorNo === u.userNo : l.assistants.includes(u.userNo),
-    )
-    .map(view)
+on('POST', '/api/enrollments', (c) => {
+  const me = student(c)
+  const semNo = requireRegistration()
+  if (!periodOpen(semNo, 'ENROLL') && !periodOpen(semNo, 'ADJUST'))
+    fail(409, 'ENROLL_CLOSED', '수강신청 기간이 아닙니다.')
+  if (me.stdStat !== 'ATTENDING')
+    fail(403, 'STUDENT_STATUS_NOT_ALLOWED', '이번 학기에 신청할 수 없는 학적상태입니다.')
+  return toEnrollment(doEnroll(me.usrNo, body<{ lecNo: number }>(c).lecNo, 'STUDENT'))
 })
-route('GET', '/api/teaching/lectures/:lecNo', (c) => {
-  const { l, role } = access(c, Number(c.params.lecNo))
+on('DELETE', '/api/enrollments/{lecNo}', (c) => {
+  const me = student(c)
+  const lecNo = Number(c.params[0])
+  if (!db.enrollments.some((e) => e.stdNo === me.usrNo && e.lecNo === lecNo))
+    fail(404, 'ENROLLMENT_NOT_FOUND', '신청한 강의가 아닙니다.')
+  db.enrollments = db.enrollments.filter((e) => !(e.stdNo === me.usrNo && e.lecNo === lecNo))
+})
+on('GET', '/api/me/timetable', (c) => {
+  const me = student(c)
+  const semNo = num(c.query.semNo) ?? registrationSemNo() ?? currentSemNo()
+  const lectures = db.enrollments
+    .filter((e) => e.stdNo === me.usrNo && findLecture(e.lecNo).semNo === semNo)
+    .map(toEnrollment)
+  return { semNo, lectures, totalCredits: lectures.reduce((s, l) => s + l.crdt, 0) }
+})
+
+// GRD-03
+on('GET', '/api/me/grades', (c) => gradeReport(student(c).usrNo))
+
+// LEC-01~04
+on('GET', '/api/teaching/lectures', (c) => {
+  const me = auth(c)
+  const semNo = num(c.query.semNo) ?? currentSemNo()
+  const sem =
+    db.semesters.find((s) => s.semNo === semNo) ??
+    fail(404, 'SEMESTER_NOT_FOUND', '학기를 찾을 수 없습니다.')
   return {
-    lecture: view(l),
-    myRole: role,
-    ratios: l.ratios,
-    studentsViewable: adjustEnded(l.semesterId),
+    semNo,
+    yr: sem.yr,
+    semType: sem.semType,
+    lectures: db.lectures
+      .filter(
+        (l) => l.semNo === semNo && (l.profNo === me.usrNo || l.assistants.includes(me.usrNo)),
+      )
+      .map((l) => {
+        const r = toLectureResponse(l)
+        return {
+          lecNo: r.lecNo,
+          crsCd: r.crsCd,
+          crsNm: r.crsNm,
+          sectNo: r.sectNo,
+          cap: r.cap,
+          enrlCnt: r.enrlCnt,
+          lecStat: r.lecStat,
+          timeSlots: r.timeSlots,
+        }
+      }),
   }
 })
-route('GET', '/api/teaching/lectures/:lecNo/students', (c) => {
-  const { l } = access(c, Number(c.params.lecNo))
-  if (!adjustEnded(l.semesterId)) fail(403, '정정 기간이 끝난 뒤에 조회할 수 있습니다.')
-  return enrolledIn(l.lecNo)
-    .map((e) => roster(userOf(e.studentNo)!))
-    .sort((a, b) => a.studentNo.localeCompare(b.studentNo))
+on('GET', '/api/teaching/lectures/{lecNo}/students', (c) => {
+  const l = teaching(c)
+  return {
+    lecNo: l.lecNo,
+    students: enrolledOf(l.lecNo)
+      .map((e) => toTeachingStudent(e.stdNo))
+      .sort((a, b) => a.stdNo.localeCompare(b.stdNo)),
+  }
 })
-route('PUT', '/api/teaching/lectures/:lecNo/syllabus', (c) => {
-  const { l } = access(c, Number(c.params.lecNo))
+function planOf(l: DbLecture): LecturePlanResponse {
+  const c = courseOf(l)
+  return {
+    lecNo: l.lecNo,
+    crsCd: l.crsCd,
+    crsNm: c.crsNm,
+    sectNo: l.sectNo,
+    evalType: c.evalType,
+    hasPlanFile: l.hasPlan,
+    weights: c.evalType === 'PASS_FAIL' ? null : l.weights,
+    deadline: semSchedules(l.semNo).find((s) => s.schdType === 'CART')?.startDtm ?? null,
+    // 목에서는 확인하기 쉽게 폐강만 아니면 고칠 수 있게 둔다
+    editable: l.lecStat === 'OPEN',
+  }
+}
+on('GET', '/api/teaching/lectures/{lecNo}/plan', (c) => planOf(teaching(c)))
+on('PUT', '/api/teaching/lectures/{lecNo}/plan/file', (c) => {
+  const l = teaching(c)
   const file = (c.body as FormData).get('file')
-  if (!(file instanceof File)) fail(400, '파일이 없습니다.')
-  if ((file as File).type !== 'application/pdf') fail(400, 'PDF 파일만 올릴 수 있습니다.')
-  l.syllabusUrl = URL.createObjectURL(file as File)
+  if (!(file instanceof Blob)) fail(400, 'INVALID_PLAN_FILE', '계획서 파일이 없습니다.')
+  planFiles.set(l.lecNo, file as Blob)
+  l.hasPlan = true
+  return planOf(l)
 })
-route('PUT', '/api/teaching/lectures/:lecNo/ratios', (c) => {
-  const { l } = access(c, Number(c.params.lecNo))
-  if (courseOf(l.courseCode).gradingType === 'PF') fail(400, 'P/F 과목은 반영 비율이 없습니다.')
-  if (l.gradeStatus !== 'NOT_ENTERED')
-    fail(400, '성적 입력이 시작되어 반영 비율을 바꿀 수 없습니다.')
-  const r = c.body as Ratios
-  const vals = [r.midterm, r.final, r.assignment, r.attendance]
-  if (vals.some((v) => !Number.isInteger(v) || v < 0 || v > 100))
-    fail(400, '비율은 0~100 사이 정수로 입력하세요.')
-  if (sumRatios(r) !== 100) fail(400, `비율 합이 100%가 아닙니다 (현재 ${sumRatios(r)}%).`)
-  l.ratios = r
+on('PUT', '/api/teaching/lectures/{lecNo}/plan/weights', (c) => {
+  const l = teaching(c)
+  const w = body<PlanWeights>(c)
+  if (w.midWt + w.finWt + w.hwWt + w.attWt !== 100)
+    fail(400, 'INVALID_WEIGHTS', '반영 비율의 합은 100 이어야 합니다.')
+  l.weights = w
+  return planOf(l)
 })
-route('GET', '/api/teaching/lectures/:lecNo/assistants', (c) => {
-  const { l } = access(c, Number(c.params.lecNo))
-  return l.assistants.map((no) => roster(userOf(no)!))
+const assistantsOf = (l: DbLecture) => ({
+  lecNo: l.lecNo,
+  assistants: l.assistants.map(toTeachingStudent),
 })
-route('GET', '/api/teaching/students/:no', (c) => {
-  needRole(c, 'PROFESSOR')
-  const u = userOf(c.params.no)
-  if (!u || u.role !== 'STUDENT' || !u.active) fail(404, '해당 학번의 학생이 없습니다.')
-  return roster(u!)
+on('GET', '/api/teaching/lectures/{lecNo}/assistants', (c) => assistantsOf(teaching(c, true)))
+on('POST', '/api/teaching/lectures/{lecNo}/assistants', (c) => {
+  const l = teaching(c, true)
+  const { stdNo } = body<{ stdNo: string }>(c)
+  if (findUser(stdNo)?.role !== 'STUDENT') fail(404, 'USER_NOT_FOUND', '사용자를 찾을 수 없습니다.')
+  if (l.assistants.includes(stdNo)) fail(409, 'DUPLICATE_ASSISTANT', '이미 지정된 조교입니다.')
+  l.assistants.push(stdNo)
+  return assistantsOf(l)
 })
-route('POST', '/api/teaching/lectures/:lecNo/assistants', (c) => {
-  const { l, role } = access(c, Number(c.params.lecNo))
-  if (role !== 'PROFESSOR') fail(403, '교수만 조교를 지정할 수 있습니다.')
-  const { studentNo } = c.body as { studentNo: string }
-  const u = userOf(studentNo)
-  if (!u || u.role !== 'STUDENT' || !u.active) fail(404, '해당 학번의 학생이 없습니다.')
-  if (l.assistants.includes(studentNo)) fail(400, '이미 조교로 지정된 학생입니다.')
-  if (enrolledIn(l.lecNo).some((e) => e.studentNo === studentNo))
-    fail(400, '이 강의를 수강 중인 학생은 조교로 지정할 수 없습니다.')
-  l.assistants.push(studentNo)
+on('DELETE', '/api/teaching/lectures/{lecNo}/assistants/{stdNo}', (c) => {
+  const l = teaching(c, true)
+  l.assistants = l.assistants.filter((n) => n !== c.params[1])
+  return assistantsOf(l)
 })
-route('DELETE', '/api/teaching/lectures/:lecNo/assistants/:no', (c) => {
-  const { l, role } = access(c, Number(c.params.lecNo))
-  if (role !== 'PROFESSOR') fail(403, '교수만 조교를 삭제할 수 있습니다.')
-  l.assistants = l.assistants.filter((x) => x !== c.params.no)
-})
-route('GET', '/api/teaching/lectures/:lecNo/grades', (c) =>
-  gradeSheet(access(c, Number(c.params.lecNo)).l),
-)
-route('PUT', '/api/teaching/lectures/:lecNo/grades', (c) => {
-  const { l } = access(c, Number(c.params.lecNo))
-  const sheet = gradeSheet(l)
-  if (!sheet.editable) fail(400, sheet.lockedReason!)
-  const rows = c.body as Pick<GradeRow, 'enrollmentId' | 'scores' | 'pf'>[]
-  for (const r of rows) {
-    const e = db.enrollments.find((x) => x.id === r.enrollmentId && x.lecNo === l.lecNo)
-    if (!e) continue
-    const vals = Object.values(r.scores)
-    if (vals.some((v) => v != null && (v < 0 || v > 100)))
-      fail(400, '점수는 0~100 사이로 입력하세요.')
-    e.scores = r.scores
-    e.pf = r.pf
-    e.letter = null
+
+// GRD-01
+const gradeEditable = (l: DbLecture) => {
+  if (!periodOpen(l.semNo, 'GRADE')) fail(409, 'GRADE_PERIOD_CLOSED', '성적 입력 기간이 아닙니다.')
+  if (l.grdStat === 'CONFIRMED') fail(409, 'GRADE_CONFIRMED', '확정된 성적은 고칠 수 없습니다.')
+}
+on('GET', '/api/teaching/lectures/{lecNo}/grades', (c) => gradeSheet(teaching(c)))
+on('PUT', '/api/teaching/lectures/{lecNo}/grades', (c) => {
+  const l = teaching(c)
+  gradeEditable(l)
+  for (const g of body<{ grades: GradeInput[] }>(c).grades) {
+    const e = db.enrollments.find((x) => x.stdNo === g.stdNo && x.lecNo === l.lecNo)
+    if (e)
+      Object.assign(e, { midScr: g.midScr, finScr: g.finScr, hwScr: g.hwScr, attScr: g.attScr })
   }
-  l.gradeStatus = 'IN_PROGRESS'
+  l.grdStat = 'ENTERING'
   return gradeSheet(l)
 })
-route('POST', '/api/teaching/lectures/:lecNo/grades/submit', (c) => {
-  const { l } = access(c, Number(c.params.lecNo))
-  const sheet = gradeSheet(l)
-  if (!sheet.editable) fail(400, sheet.lockedReason!)
-  if (l.gradeStatus !== 'IN_PROGRESS') fail(400, '저장한 뒤에 제출할 수 있습니다.')
-  const es = enrolledIn(l.lecNo)
-  const pf = sheet.gradingType === 'PF'
-  const missing = es.filter((e) =>
-    pf ? !e.pf : Object.values(e.scores).some((v) => v == null),
-  ).length
-  if (missing) fail(400, `성적을 입력하지 않은 수강생이 ${missing}명 있습니다.`)
-  const letters = es.map((e) =>
-    pf ? (e.pf as LetterGrade) : letterOf(totalScore(e.scores, l.ratios!)!),
-  )
-  if (!pf && !l.excludeRelative) {
-    const r = relativeRatio(letters)
-    if (!r.ok)
-      fail(400, `상대평가 비율을 넘었습니다 (A ${r.aPct}% / 상한 30%, A+B ${r.abPct}% / 상한 70%).`)
-  }
-  es.forEach((e, i) => (e.letter = letters[i]))
-  l.gradeStatus = 'SUBMITTED'
+on('PUT', '/api/teaching/lectures/{lecNo}/grades/counts', (c) => {
+  const l = teaching(c)
+  gradeEditable(l)
+  const { aCnt, abCnt } = body<{ aCnt: number | null; abCnt: number | null }>(c)
+  l.aCnt = aCnt
+  l.abCnt = abCnt
+  return gradeSheet(l)
+})
+on('POST', '/api/teaching/lectures/{lecNo}/grades/submit', (c) => {
+  const l = teaching(c)
+  gradeEditable(l)
+  if (gradeSheet(l).students.some((s) => !s.entered))
+    fail(409, 'GRADES_INCOMPLETE', '입력하지 않은 성적이 있습니다.')
+  l.grdStat = 'SUBMITTED'
   return gradeSheet(l)
 })
 
-// 관리자
-route('GET', '/api/admin/dashboard', (c) => {
-  needRole(c, 'ADMIN')
-  const ls = db.lectures.filter((l) => l.semesterId === semParam(c))
-  const open = ls.filter((l) => l.status === 'OPEN')
+// ACA-04
+on('GET', '/api/admin/dashboard', (c) => {
+  admin(c)
+  const semNo = num(c.query.semNo) ?? registrationSemNo() ?? currentSemNo()
+  const lecs = db.lectures.filter((l) => l.semNo === semNo && l.lecStat === 'OPEN')
   return {
-    openLectureCount: open.length,
-    closedLectureCount: ls.length - open.length,
-    totalEnrollments: open.reduce((s, l) => s + enrolledIn(l.lecNo).length, 0),
-    fullLectures: open.filter((l) => enrolledIn(l.lecNo).length >= l.capacity).map(view),
+    semNo,
+    openLectureCount: lecs.length,
+    fullLectures: lecs
+      .map(toLectureResponse)
+      .filter((l) => l.enrlCnt >= l.cap)
+      .map((l) => ({
+        lecNo: l.lecNo,
+        crsNm: l.crsNm,
+        sectNo: l.sectNo,
+        profNm: l.profNm,
+        cap: l.cap,
+        enrlCnt: l.enrlCnt,
+      })),
+    unassignedLectureCount: lecs.filter((l) =>
+      l.timeSlots.some((t) => t.clsType === 'OFFLINE' && !t.roomCd),
+    ).length,
+    missingPlanLectures: lecs
+      .filter((l) => !l.hasPlan || (courseOf(l).evalType === 'GRADE' && !l.weights))
+      .map((l) => {
+        const p = findUser(l.profNo)
+        return {
+          lecNo: l.lecNo,
+          crsNm: courseOf(l).crsNm,
+          sectNo: l.sectNo,
+          profNo: l.profNo,
+          profNm: p?.usrNm ?? '',
+          profEmail: p?.email ?? null,
+          noPlanFile: !l.hasPlan,
+          noWeights: courseOf(l).evalType === 'GRADE' && !l.weights,
+        }
+      }),
   }
 })
 
 // USR-02
-route('GET', '/api/admin/users', (c) => {
-  needRole(c, 'ADMIN')
-  const kw = c.query.get('keyword') ?? ''
-  const role = c.query.get('role')
+on('GET', '/api/admin/users', (c) => {
+  admin(c)
+  const { keyword, role } = c.query
   return db.users
-    .filter((u) => !role || u.role === role)
-    .filter((u) => !kw || u.userNo.includes(kw) || u.name.includes(kw))
-    .map(publicUser)
+    .filter(
+      (u) =>
+        (!role || u.role === role) &&
+        (!keyword || u.usrNm.includes(keyword) || u.usrNo.includes(keyword)),
+    )
+    .map(toUser)
 })
-function validateUser(f: UserForm) {
-  if (!f.userNo?.trim() || !f.name?.trim()) fail(400, '사용자번호와 이름은 필수입니다.')
-  if (f.role !== 'ADMIN' && !f.deptName) fail(400, '학과를 입력하세요.')
-  if (f.role === 'STUDENT' && !(f.grade && f.grade >= 1 && f.grade <= 4))
-    fail(400, '학년은 1~4 사이로 입력하세요.')
-}
-route('POST', '/api/admin/users', (c) => {
-  needRole(c, 'ADMIN')
-  const f = c.body as UserForm
-  validateUser(f)
-  if (userOf(f.userNo)) fail(400, '이미 있는 사용자번호입니다.')
-  if (!f.password) fail(400, '초기 비밀번호를 입력하세요.')
-  const u: DbUser = {
-    userNo: f.userNo.trim(),
-    name: f.name.trim(),
-    role: f.role,
-    active: true,
-    password: f.password!,
-    ...(f.role !== 'ADMIN' ? { deptName: f.deptName, email: f.email } : {}),
-    ...(f.role === 'STUDENT' ? { grade: f.grade } : {}),
-  }
+on('POST', '/api/admin/users', (c) => {
+  admin(c)
+  const f = body<UserCreateRequest>(c)
+  if (findUser(f.usrNo)) fail(409, 'DUPLICATE_USER_NO', '이미 사용 중인 로그인 ID입니다.')
+  if (!f.deptNo) fail(400, 'INVALID_INPUT', 'deptNo: 널이어서는 안됩니다')
+  const u: DbUser = { ...f, acctStat: 'ACTIVE', deptNm: deptNm(f.deptNo) }
   db.users.push(u)
-  return publicUser(u)
+  return toUser(u)
 })
-route('PUT', '/api/admin/users/:no', (c) => {
-  needRole(c, 'ADMIN')
-  const u = userOf(c.params.no) ?? fail(404, '사용자를 찾을 수 없습니다.')
-  const f = c.body as UserForm
-  validateUser({ ...f, userNo: u.userNo, role: u.role })
-  u.name = f.name.trim()
-  if (u.role !== 'ADMIN') {
-    u.deptName = f.deptName
-    u.email = f.email
-  }
-  if (u.role === 'STUDENT') u.grade = f.grade
-  if (f.password) u.password = f.password
-  return publicUser(u)
+on('PUT', '/api/admin/users/{usrNo}', (c) => {
+  admin(c)
+  const u = findUser(c.params[0]) ?? fail(404, 'USER_NOT_FOUND', '사용자를 찾을 수 없습니다.')
+  const f = body<UserUpdateRequest>(c)
+  Object.assign(u, f, { deptNm: deptNm(f.deptNo) })
+  return toUser(u)
 })
-route('POST', '/api/admin/users/:no/deactivate', (c) => {
-  const me = needRole(c, 'ADMIN')
-  if (me.userNo === c.params.no) fail(400, '본인 계정은 비활성화할 수 없습니다.')
-  const u = userOf(c.params.no) ?? fail(404, '사용자를 찾을 수 없습니다.')
-  u.active = false
+on('PATCH', '/api/admin/users/{usrNo}/password', (c) => {
+  admin(c)
+  const u = findUser(c.params[0]) ?? fail(404, 'USER_NOT_FOUND', '사용자를 찾을 수 없습니다.')
+  u.password = body<{ newPassword: string }>(c).newPassword
+})
+on('PATCH', '/api/admin/users/{usrNo}/deactivate', (c) => {
+  admin(c)
+  const u = findUser(c.params[0]) ?? fail(404, 'USER_NOT_FOUND', '사용자를 찾을 수 없습니다.')
+  u.acctStat = 'INACTIVE'
+  return toUser(u)
 })
 
 // ACA-01
-route('POST', '/api/admin/semesters', (c) => {
-  needRole(c, 'ADMIN')
-  const { year, term } = c.body as { year: number; term: Term }
-  if (!year || year < 2000) fail(400, '연도를 확인하세요.')
-  const id = `${year}-${term}`
-  if (db.semesters.some((s) => s.id === id)) fail(400, '이미 등록된 학기입니다.')
-  const s: Semester = { id, year, term, current: false }
+on('POST', '/api/admin/semesters', (c) => {
+  admin(c)
+  const { yr, semType } = body<SemesterRequest>(c)
+  if (db.semesters.some((s) => s.yr === yr && s.semType === semType))
+    fail(409, 'DUPLICATE_SEMESTER', '이미 등록된 학기입니다.')
+  const s = {
+    semNo: Math.max(0, ...db.semesters.map((x) => x.semNo)) + 1,
+    yr,
+    semType,
+    regular: semType === 'FIRST' || semType === 'SECOND',
+    current: false,
+  }
   db.semesters.push(s)
+  const order = ['FIRST', 'SUMMER', 'SECOND', 'WINTER']
+  db.semesters.sort((a, b) => a.yr - b.yr || order.indexOf(a.semType) - order.indexOf(b.semType))
   return s
 })
-route('POST', '/api/admin/semesters/:id/current', (c) => {
-  needRole(c, 'ADMIN')
-  if (!db.semesters.some((s) => s.id === c.params.id)) fail(404, '학기를 찾을 수 없습니다.')
-  for (const s of db.semesters) s.current = s.id === c.params.id
+on('PUT', '/api/admin/semesters/{semNo}', (c) => {
+  admin(c)
+  const s =
+    db.semesters.find((x) => x.semNo === Number(c.params[0])) ??
+    fail(404, 'SEMESTER_NOT_FOUND', '학기를 찾을 수 없습니다.')
+  const { yr, semType } = body<SemesterRequest>(c)
+  Object.assign(s, { yr, semType, regular: semType === 'FIRST' || semType === 'SECOND' })
+  return s
 })
-route('GET', '/api/admin/semesters/:id/schedules', (c) => {
-  needRole(c, 'ADMIN')
-  return db.schedules[c.params.id] ?? []
+on('PUT', '/api/admin/semesters/{semNo}/current', (c) => {
+  admin(c)
+  for (const s of db.semesters) s.current = s.semNo === Number(c.params[0])
+  return db.semesters.find((s) => s.current)
 })
-route('PUT', '/api/admin/semesters/:id/schedules', (c) => {
-  needRole(c, 'ADMIN')
-  const list = c.body as Schedule[]
-  for (const s of list) {
-    if (!s.startDate || !s.endDate) fail(400, '시작일과 종료일을 모두 입력하세요.')
-    if (s.startDate > s.endDate) fail(400, '시작일이 종료일보다 늦을 수 없습니다.')
-    if (!s.targetGrades.length) fail(400, '대상학년을 하나 이상 고르세요.')
-  }
-  db.schedules[c.params.id] = list
+on('POST', '/api/admin/semesters/{semNo}/schedules', (c) => {
+  admin(c)
+  const f = body<ScheduleRequest>(c)
+  if (!f.startDtm || !f.endDtm) fail(400, 'INVALID_INPUT', 'startDtm: 널이어서는 안됩니다')
+  const s = { ...f, schdNo: ++db.seq, semNo: Number(c.params[0]) }
+  db.schedules.push(s)
+  return s
 })
-route('GET', '/api/admin/semesters/:id/max-credits', (c) => {
-  needRole(c, 'ADMIN')
-  return db.maxCredits[c.params.id] ?? []
+on('DELETE', '/api/admin/schedules/{schdNo}', (c) => {
+  admin(c)
+  const s =
+    db.schedules.find((x) => x.schdNo === Number(c.params[0])) ??
+    fail(404, 'SCHEDULE_NOT_FOUND', '학사일정을 찾을 수 없습니다.')
+  if (new Date(s.startDtm) <= now())
+    fail(409, 'SCHEDULE_STARTED', '이미 시작된 일정은 삭제할 수 없습니다.')
+  db.schedules = db.schedules.filter((x) => x !== s)
 })
-route('POST', '/api/admin/semesters/:id/max-credits', (c) => {
-  needRole(c, 'ADMIN')
-  const sem =
-    db.semesters.find((s) => s.id === c.params.id) ?? fail(404, '학기를 찾을 수 없습니다.')
-  if (sem.term === '1' || sem.term === '2') {
-    const prev = db.semesters
-      .filter((s) => (s.term === '1' || s.term === '2') && semOrder(s.id) < semOrder(sem.id))
-      .sort((a, b) => semOrder(b.id) - semOrder(a.id))[0]
-    const pending =
-      prev &&
-      db.lectures.some(
-        (l) =>
-          l.semesterId === prev.id &&
-          l.status === 'OPEN' &&
-          l.gradeStatus !== 'CONFIRMED' &&
-          enrolledIn(l.lecNo).length > 0,
-      )
-    if (pending)
-      fail(400, `직전 정규학기(${semesterLabel(prev.id)}) 성적이 모두 확정되지 않았습니다.`)
-  }
-  db.maxCredits[sem.id] = computeMaxCredits(db, sem.id)
-  return db.maxCredits[sem.id]
+on('GET', '/api/admin/semesters/{semNo}/max-credits', (c) => {
+  admin(c)
+  return db.maxCredits[Number(c.params[0])] ?? []
+})
+on('POST', '/api/admin/semesters/{semNo}/max-credits', (c) => {
+  admin(c)
+  const semNo = Number(c.params[0])
+  const sem = db.semesters.find((s) => s.semNo === semNo)!
+  const rows: MaxCreditItem[] = db.users
+    .filter((u) => u.role === 'STUDENT' && u.stdStat !== 'GRADUATED')
+    .map((u) => {
+      const gpa = gradeReport(u.usrNo).cumulativeGpa
+      return {
+        stdNo: u.usrNo,
+        usrNm: u.usrNm,
+        yrLvl: u.yrLvl ?? 1,
+        stdStat: u.stdStat ?? 'ATTENDING',
+        maxCrdt: sem.regular
+          ? gpa != null && gpa >= 4.0
+            ? 21
+            : 18
+          : u.stdStat === 'ON_LEAVE'
+            ? 3
+            : 6,
+      }
+    })
+  db.maxCredits[semNo] = rows
+  const counts: Record<string, number> = {}
+  for (const r of rows) counts[r.maxCrdt] = (counts[r.maxCrdt] ?? 0) + 1
+  return { semNo, regular: sem.regular, graduated: 0, counts }
 })
 
 // ACA-02
-route('GET', '/api/admin/courses', (c) => {
-  needUser(c)
-  return db.courses.map((x) => ({
-    ...x,
-    prerequisites: x.prerequisites.map((p) => ({ ...p, courseName: courseOf(p.courseCode).name })),
-  }))
-})
-function validateCourse(f: Course) {
-  if (!f.code?.trim() || !f.name?.trim()) fail(400, '과목코드와 과목명은 필수입니다.')
-  if (!(f.credits >= 0 && f.credits <= 6)) fail(400, '학점은 0~6 사이로 입력하세요.')
-  for (const p of f.prerequisites) {
-    if (p.courseCode === f.code) fail(400, '자기 자신을 선수과목으로 지정할 수 없습니다.')
-    courseOf(p.courseCode)
+on('GET', '/api/admin/courses', (c) => (admin(c), db.courses))
+on('POST', '/api/admin/courses', (c) => {
+  admin(c)
+  const f = body<CourseCreateRequest>(c)
+  if (!/^\d{7}$/.test(f.crsCd)) fail(400, 'INVALID_INPUT', 'crsCd: 숫자 7자리여야 합니다.')
+  if (findCourse(f.crsCd)) fail(409, 'DUPLICATE_COURSE_CODE', '이미 등록된 과목코드입니다.')
+  const course = {
+    ...f,
+    deptNm: deptNm(f.deptNo),
+    prerequisites: f.prerequisites.map((p) => ({
+      ...p,
+      prereqCrsNm: findCourse(p.prereqCrsCd)?.crsNm ?? '',
+    })),
   }
-}
-const stripCourse = (f: Course): Course => ({
-  ...f,
-  prerequisites: f.prerequisites.map(({ courseCode, minGrade }) => ({ courseCode, minGrade })),
+  db.courses.push(course)
+  return course
 })
-route('POST', '/api/admin/courses', (c) => {
-  needRole(c, 'ADMIN')
-  const f = c.body as Course
-  validateCourse(f)
-  if (db.courses.some((x) => x.code === f.code)) fail(400, '이미 있는 과목코드입니다.')
-  db.courses.push(stripCourse(f))
-  return f
+on('PUT', '/api/admin/courses/{crsCd}', (c) => {
+  admin(c)
+  const course =
+    findCourse(c.params[0]) ?? fail(404, 'COURSE_NOT_FOUND', '과목을 찾을 수 없습니다.')
+  const f = body<CourseUpdateRequest>(c)
+  Object.assign(course, f, { deptNm: deptNm(f.deptNo) })
+  return course
 })
-route('PUT', '/api/admin/courses/:code', (c) => {
-  needRole(c, 'ADMIN')
-  const i = db.courses.findIndex((x) => x.code === c.params.code)
-  if (i < 0) fail(404, '과목을 찾을 수 없습니다.')
-  const f = { ...(c.body as Course), code: c.params.code }
-  validateCourse(f)
-  db.courses[i] = stripCourse(f)
-  return f
+on('PUT', '/api/admin/courses/{crsCd}/prerequisites', (c) => {
+  admin(c)
+  const course =
+    findCourse(c.params[0]) ?? fail(404, 'COURSE_NOT_FOUND', '과목을 찾을 수 없습니다.')
+  const list = body<{ prerequisites: PrerequisiteRequest[] }>(c).prerequisites
+  if (list.some((p) => p.prereqCrsCd === course.crsCd))
+    fail(409, 'PREREQUISITE_SELF', '자기 자신을 선수과목으로 지정할 수 없습니다.')
+  course.prerequisites = list.map((p) => ({
+    ...p,
+    prereqCrsNm: findCourse(p.prereqCrsCd)?.crsNm ?? '',
+  }))
+  return course
 })
 
 // ACA-03
-route('GET', '/api/admin/lectures', (c) => {
-  needRole(c, 'ADMIN')
-  return db.lectures
-    .filter((l) => l.semesterId === semParam(c))
-    .map(view)
-    .sort((a, b) => a.courseCode.localeCompare(b.courseCode) || a.section.localeCompare(b.section))
+on('GET', '/api/admin/lectures', (c) => {
+  admin(c)
+  const semNo = num(c.query.semNo) ?? fail(400, 'INVALID_INPUT', 'semNo 가 필요합니다.')
+  return db.lectures.filter((l) => l.semNo === semNo).map(toLectureResponse)
 })
-function validateLecture(f: LectureForm, lecNo?: number) {
-  courseOf(f.courseCode)
-  const p = userOf(f.professorNo)
-  if (!p || p.role !== 'PROFESSOR') fail(400, '담당 교수를 고르세요.')
-  if (!f.section?.trim()) fail(400, '분반을 입력하세요.')
-  if (!(f.capacity > 0)) fail(400, '정원은 1 이상이어야 합니다.')
-  if (!f.times.length) fail(400, '강의시간을 하나 이상 입력하세요.')
-  for (const t of f.times) {
-    if (t.startPeriod > t.endPeriod)
-      fail(400, `${DAY_LABEL[t.day]}요일 시작 교시가 종료 교시보다 늦습니다.`)
-    if (!t.room?.trim()) fail(400, '강의실을 입력하세요.')
-  }
-  if (
-    db.lectures.some(
-      (l) =>
-        l.lecNo !== lecNo &&
-        l.semesterId === f.semesterId &&
-        l.courseCode === f.courseCode &&
-        l.section === f.section,
-    )
-  )
-    fail(400, '같은 학기에 같은 과목·분반이 이미 있습니다.')
-}
-route('POST', '/api/admin/lectures', (c) => {
-  needRole(c, 'ADMIN')
-  const f = c.body as LectureForm
-  validateLecture(f)
-  const lecNo = Math.max(...db.lectures.map((l) => l.lecNo)) + 1
+on('POST', '/api/admin/lectures', (c) => {
+  admin(c)
+  const f = body<LectureCreateRequest>(c)
+  if (!findCourse(f.crsCd)) fail(404, 'COURSE_NOT_FOUND', '과목을 찾을 수 없습니다.')
+  if (findUser(f.profNo)?.role !== 'PROFESSOR')
+    fail(404, 'PROFESSOR_NOT_FOUND', '담당할 수 있는 교수가 아닙니다.')
+  if (db.lectures.some((l) => l.semNo === f.semNo && l.crsCd === f.crsCd && l.sectNo === f.sectNo))
+    fail(409, 'DUPLICATE_SECTION', '같은 학기·과목에 이미 있는 분반입니다.')
   const l: DbLecture = {
     ...f,
-    lecNo,
-    status: 'OPEN',
-    gradeStatus: 'NOT_ENTERED',
-    syllabusUrl: null,
-    ratios: null,
+    lecNo: Math.max(0, ...db.lectures.map((x) => x.lecNo)) + 1,
+    lecStat: 'OPEN',
+    grdStat: 'NOT_ENTERED',
+    hasPlan: false,
+    weights: null,
     assistants: [],
+    aCnt: null,
+    abCnt: null,
+    cnfmDtm: null,
   }
   db.lectures.push(l)
-  return view(l)
+  return toLectureResponse(l)
 })
-route('PUT', '/api/admin/lectures/:lecNo', (c) => {
-  needRole(c, 'ADMIN')
-  const l = lectureOf(Number(c.params.lecNo))
-  if (l.status === 'CLOSED') fail(400, '폐강된 강의는 수정할 수 없습니다.')
-  const f = c.body as LectureForm
-  validateLecture({ ...f, semesterId: l.semesterId }, l.lecNo)
-  if (f.capacity < enrolledIn(l.lecNo).length)
-    fail(400, `정원을 현재 신청 인원(${enrolledIn(l.lecNo).length}명)보다 줄일 수 없습니다.`)
-  Object.assign(l, { ...f, semesterId: l.semesterId })
-  return view(l)
+on('PUT', '/api/admin/lectures/{lecNo}', (c) => {
+  admin(c)
+  const l = findLecture(Number(c.params[0]))
+  Object.assign(l, body<LectureUpdateRequest>(c))
+  return toLectureResponse(l)
 })
-route('POST', '/api/admin/lectures/:lecNo/close', (c) => {
-  needRole(c, 'ADMIN')
-  const l = lectureOf(Number(c.params.lecNo))
-  l.status = 'CLOSED'
-  for (const e of enrolledIn(l.lecNo)) e.status = 'CANCELLED'
+on('PATCH', '/api/admin/lectures/{lecNo}/close', (c) => {
+  admin(c)
+  const l = findLecture(Number(c.params[0]))
+  l.lecStat = 'CLOSED'
+  db.enrollments = db.enrollments.filter((e) => e.lecNo !== l.lecNo)
   db.cart = db.cart.filter((x) => x.lecNo !== l.lecNo)
+  return toLectureResponse(l)
 })
 
 // REG-05
-route('GET', '/api/admin/lectures/:lecNo/enrollments', (c) => {
-  needRole(c, 'ADMIN')
-  const l = lectureOf(Number(c.params.lecNo))
+function enrollmentStatus(lecNo: number): EnrollmentStatusResponse {
+  const l = findLecture(lecNo)
+  const list = enrolledOf(lecNo)
   return {
-    lecture: view(l),
-    editable: !adjustEnded(l.semesterId) && l.status === 'OPEN',
-    students: enrolledIn(l.lecNo).map((e) => ({
-      ...roster(userOf(e.studentNo)!),
-      enrollmentId: e.id,
-      isRetake: e.isRetake,
-    })),
+    lecNo,
+    cap: l.cap,
+    enrlCnt: list.length,
+    remaining: l.cap - list.length,
+    students: list.map((e) => {
+      const u = findUser(e.stdNo)
+      return {
+        stdNo: e.stdNo,
+        stdNm: u?.usrNm ?? '',
+        yrLvl: u?.yrLvl ?? 0,
+        retake: e.retake,
+        procType: e.procType,
+        enrlDtm: e.enrlDtm,
+      }
+    }),
   }
+}
+on(
+  'GET',
+  '/api/admin/lectures/{lecNo}/enrollments',
+  (c) => (admin(c), enrollmentStatus(Number(c.params[0]))),
+)
+on('POST', '/api/admin/lectures/{lecNo}/enrollments', (c) => {
+  admin(c)
+  const { stdNo } = body<{ stdNo: string }>(c)
+  if (findUser(stdNo)?.role !== 'STUDENT') fail(404, 'USER_NOT_FOUND', '사용자를 찾을 수 없습니다.')
+  doEnroll(stdNo, Number(c.params[0]), 'ADMIN')
+  return enrollmentStatus(Number(c.params[0]))
 })
-route('POST', '/api/admin/lectures/:lecNo/enrollments', (c) => {
-  needRole(c, 'ADMIN')
-  const l = lectureOf(Number(c.params.lecNo))
-  if (adjustEnded(l.semesterId)) fail(400, '정정 기간이 끝나 직권 처리할 수 없습니다.')
-  const { studentNo } = c.body as { studentNo: string }
-  const u = userOf(studentNo)
-  if (!u || u.role !== 'STUDENT' || !u.active) fail(404, '해당 학번의 학생이 없습니다.')
-  const isRetake = checkEnroll(studentNo, l, true)
-  db.enrollments.push({
-    id: db.seq++,
-    studentNo,
-    lecNo: l.lecNo,
-    status: 'ENROLLED',
-    isRetake,
-    scores: { midterm: null, final: null, assignment: null, attendance: null },
-    pf: null,
-    letter: null,
-  })
-})
-route('DELETE', '/api/admin/enrollments/:id', (c) => {
-  needRole(c, 'ADMIN')
-  const e = db.enrollments.find((x) => x.id === Number(c.params.id) && x.status === 'ENROLLED')
-  if (!e) fail(404, '신청 내역을 찾을 수 없습니다.')
-  if (adjustEnded(lectureOf(e!.lecNo).semesterId))
-    fail(400, '정정 기간이 끝나 직권 처리할 수 없습니다.')
-  e!.status = 'CANCELLED'
+on('DELETE', '/api/admin/lectures/{lecNo}/enrollments/{stdNo}', (c) => {
+  admin(c)
+  const lecNo = Number(c.params[0])
+  db.enrollments = db.enrollments.filter((e) => !(e.lecNo === lecNo && e.stdNo === c.params[1]))
 })
 
 // GRD-02
-route('POST', '/api/admin/grades/:lecNo/confirm', (c) => {
-  needRole(c, 'ADMIN')
-  const l = lectureOf(Number(c.params.lecNo))
-  if (l.gradeStatus !== 'SUBMITTED') fail(400, '제출된 강의만 확정할 수 있습니다.')
-  l.gradeStatus = 'CONFIRMED'
+on('GET', '/api/admin/grades', (c) => {
+  admin(c)
+  const semNo = num(c.query.semNo) ?? currentSemNo()
+  const sem =
+    db.semesters.find((s) => s.semNo === semNo) ??
+    fail(404, 'SEMESTER_NOT_FOUND', '학기를 찾을 수 없습니다.')
+  const lecs = db.lectures.filter((l) => l.semNo === semNo && l.lecStat === 'OPEN')
+  const counts: Partial<Record<GrdStat, number>> = {}
+  for (const l of lecs) counts[l.grdStat] = (counts[l.grdStat] ?? 0) + 1
+  return {
+    semNo,
+    yr: sem.yr,
+    semType: sem.semType,
+    gradeEnd: semSchedules(semNo).find((s) => s.schdType === 'GRADE')?.endDtm ?? null,
+    // 목에서는 확인하기 쉽게 언제든 확정할 수 있게 둔다
+    confirmable: true,
+    counts,
+    lectures: lecs
+      .filter((l) => !c.query.grdStat || l.grdStat === c.query.grdStat)
+      .map((l) => {
+        const p = findUser(l.profNo)
+        return {
+          lecNo: l.lecNo,
+          crsCd: l.crsCd,
+          crsNm: courseOf(l).crsNm,
+          sectNo: l.sectNo,
+          profNo: l.profNo,
+          profNm: p?.usrNm ?? '',
+          profEmail: p?.email ?? null,
+          enrlCnt: enrolledOf(l.lecNo).length,
+          grdStat: l.grdStat,
+          cnfmDtm: l.cnfmDtm,
+        }
+      }),
+  }
+})
+on('POST', '/api/admin/grades/confirm', (c) => {
+  admin(c)
+  const { lecNos } = body<{ lecNos: number[] }>(c)
+  const lecs = lecNos.map(findLecture)
+  if (lecs.some((l) => l.grdStat !== 'SUBMITTED'))
+    fail(409, 'GRADE_NOT_SUBMITTED', '제출된 성적만 확정할 수 있습니다.')
+  for (const l of lecs) {
+    l.grdStat = 'CONFIRMED'
+    l.cnfmDtm = nowLocal()
+  }
+  return {
+    confirmed: lecs.map((l) => ({
+      lecNo: l.lecNo,
+      crsNm: courseOf(l).crsNm,
+      grdStat: l.grdStat,
+      cnfmDtm: l.cnfmDtm,
+    })),
+  }
 })
 
-// ---- 진입점 ----
-export async function mockFetch<T>(
+/* ---------- 진입점 ---------- */
+
+export async function mockRequest<T>(
   method: string,
-  url: string,
-  body: unknown,
-  token: string | null,
+  path: string,
+  opts: { query?: Record<string, unknown>; body?: unknown },
 ): Promise<T> {
   await new Promise((r) => setTimeout(r, 120))
-  const [path, qs] = url.split('?')
-  const user = token?.startsWith('mock-') ? (userOf(token.slice(5)) ?? null) : null
-  for (const r of routes) {
-    if (r.method !== method) continue
-    const m = path.match(r.re)
-    if (!m) continue
-    const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]))
-    if (user && !user.active) fail(401, '비활성화된 계정입니다.')
-    const result = r.handler({ params, query: new URLSearchParams(qs), body, user })
+  const token = tokenStore.get()
+  const me = token?.startsWith('mock-') ? findUser(token.slice(5)) : undefined
+  const query: Record<string, string> = {}
+  for (const [k, v] of Object.entries(opts.query ?? {}))
+    if (v !== undefined && v !== null && v !== '') query[k] = String(v)
+
+  for (const [m, re, h] of routes) {
+    const match = m === method && path.match(re)
+    if (!match) continue
+    const result = h({ params: match.slice(1), query, body: opts.body, me })
     if (method !== 'GET') save()
-    return clone(result) as T
+    // 응답을 복사해서 화면이 목 DB 객체를 직접 건드리지 않게 한다
+    return (result === undefined ? undefined : structuredClone(result)) as T
   }
-  return fail(404, `목 서버에 없는 경로입니다: ${method} ${path}`)
+  return fail(404, 'NOT_FOUND', `목 서버에 없는 경로입니다: ${method} ${path}`)
 }
 
-// 모든 상수·라우트 선언 뒤에 DB 를 불러온다
-db = load()
+/** 계획서 내려받기. 올린 파일이 없으면 빈 PDF 를 만든다 */
+export async function mockBlob(path: string): Promise<Blob> {
+  const m = path.match(/^\/api\/lectures\/(\d+)\/plan$/)
+  if (!m) return fail(404, 'NOT_FOUND', '파일이 없습니다.')
+  const l = findLecture(Number(m[1]))
+  if (!l.hasPlan) return fail(404, 'PLAN_NOT_FOUND', '등록된 강의계획서가 없습니다.')
+  const uploaded = planFiles.get(l.lecNo)
+  if (uploaded) return uploaded
+  const pdf =
+    '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF'
+  return new Blob([pdf], { type: 'application/pdf' })
+}

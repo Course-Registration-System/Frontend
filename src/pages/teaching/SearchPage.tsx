@@ -5,7 +5,7 @@ import { PageHeader } from '../../components/ui'
 export default function TeachingSearchPage() {
   return (
     <>
-      <PageHeader title="강의 검색" desc="이번 학기 개설 강의를 열람합니다." />
+      <PageHeader title="강의 검색" desc="신청 대상 학기의 개설 강의를 열람합니다." />
       <LectureSearch />
     </>
   )

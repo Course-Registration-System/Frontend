@@ -1,7 +1,4 @@
-// 백엔드 호출 공통 함수.
-// VITE_USE_MOCK 이 'false' 가 아니면 src/mock 의 인메모리 서버가 같은 경로를 처리한다.
-
-export const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false'
+// 백엔드 호출 공통 함수. /api 요청은 vite 프록시로 백엔드에 전달된다.
 
 const TOKEN_KEY = 'crs.token'
 
@@ -32,7 +29,7 @@ export class ApiError extends Error {
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
-type Query = Record<string, string | number | undefined | null>
+type Query = Record<string, string | number | boolean | undefined | null>
 
 const withQuery = (path: string, query?: Query) => {
   if (!query) return path
@@ -49,40 +46,72 @@ export async function request<T>(
   path: string,
   opts: { query?: Query; body?: unknown } = {},
 ): Promise<T> {
-  const url = withQuery(path, opts.query)
-  const token = tokenStore.get()
-
-  if (USE_MOCK) {
-    const { mockFetch } = await import('../mock/server')
-    return mockFetch<T>(method, url, opts.body, token)
+  // npm run dev:mock 일 때만 목 서버로 보낸다. 일반 빌드에서는 이 분기와 목 코드가 빠진다.
+  if (import.meta.env.VITE_USE_MOCK === 'true') {
+    const { mockRequest } = await import('../mock/server')
+    return mockRequest<T>(method, path, opts)
   }
-
+  const token = tokenStore.get()
   const isForm = opts.body instanceof FormData
-  const res = await fetch(url, {
-    method,
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(opts.body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body:
-      opts.body === undefined
-        ? undefined
-        : isForm
-          ? (opts.body as FormData)
-          : JSON.stringify(opts.body),
-  })
+  let res: Response
+  try {
+    res = await fetch(withQuery(path, opts.query), {
+      method,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(opts.body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body:
+        opts.body === undefined
+          ? undefined
+          : isForm
+            ? (opts.body as FormData)
+            : JSON.stringify(opts.body),
+    })
+  } catch {
+    throw new ApiError(0, '서버에 연결할 수 없습니다.')
+  }
   if (!res.ok) {
     let message = `요청에 실패했습니다 (HTTP ${res.status})`
     try {
+      // 백엔드는 ProblemDetail 로 보낸다: { status, detail, code }
       const data = await res.json()
-      if (data?.message) message = data.message
+      if (data?.detail) message = data.detail
+      else if (data?.message) message = data.message
     } catch {
       /* 본문 없음 */
     }
     throw new ApiError(res.status, message)
   }
   if (res.status === 204) return undefined as T
-  return (await res.json()) as T
+  const text = await res.text()
+  return (text ? JSON.parse(text) : undefined) as T
+}
+
+/** 파일 받기 (인증 헤더가 필요해서 a href 로 열 수 없다) */
+export async function requestBlob(path: string): Promise<Blob> {
+  if (import.meta.env.VITE_USE_MOCK === 'true') {
+    const { mockBlob } = await import('../mock/server')
+    return mockBlob(path)
+  }
+  const token = tokenStore.get()
+  let res: Response
+  try {
+    res = await fetch(path, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  } catch {
+    throw new ApiError(0, '서버에 연결할 수 없습니다.')
+  }
+  if (!res.ok) {
+    let message = `파일을 받지 못했습니다 (HTTP ${res.status})`
+    try {
+      const data = await res.json()
+      if (data?.detail) message = data.detail
+    } catch {
+      /* 본문 없음 */
+    }
+    throw new ApiError(res.status, message)
+  }
+  return res.blob()
 }
 
 export const errorMessage = (e: unknown) =>
