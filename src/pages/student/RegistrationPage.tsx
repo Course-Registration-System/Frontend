@@ -21,8 +21,8 @@ export default function RegistrationPage() {
   // 담기·신청·취소 뒤 검색 결과의 잔여 인원도 다시 불러오게 한다
   const [version, setVersion] = useState(0)
 
-  // 신청 대상 학기가 없으면 서버가 409 를 준다
-  const { data, error, loading, reload } = useAsync(
+  // 신청 대상 학기가 없으면 서버가 409 NO_REGISTRATION_SEMESTER 를 준다
+  const { data, error, errorCode, loading, reload } = useAsync(
     () => Promise.all([studentApi.cart(), studentApi.enrollments()]),
     [version],
   )
@@ -65,7 +65,14 @@ export default function RegistrationPage() {
         )}
       </Notice>
 
-      {error && <ErrorBox message={error} onRetry={reload} />}
+      {errorCode === 'NO_REGISTRATION_SEMESTER' ? (
+        <Notice kind="warn">
+          지금은 신청 대상 학기가 없어 장바구니·수강신청을 할 수 없습니다. 강의 검색만 할 수
+          있습니다.
+        </Notice>
+      ) : (
+        error && <ErrorBox message={error} onRetry={reload} />
+      )}
       {cart && (
         <div className="stats">
           <Stat label="담은 학점 (채플 제외)" value={`${cart.cartCredits}학점`} />
@@ -164,6 +171,7 @@ export default function RegistrationPage() {
         ) : (
           <LectureTable
             rows={enrolled}
+            extra={[{ head: '신청일시', cell: (e) => formatDateTime(e.enrlDtm) }]}
             actions={(e) => (
               <>
                 {e.retake && <Badge tone="amber">재수강</Badge>}

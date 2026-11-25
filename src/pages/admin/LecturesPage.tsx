@@ -1,6 +1,7 @@
 // ACA-03 강의 개설 관리: 개설·수정·폐강
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { FormEvent } from 'react'
+import { Link, useSearchParams } from 'react-router'
 import { adminApi } from '../../api'
 import { errorMessage } from '../../api/client'
 import { useToast } from '../../components/Toast'
@@ -56,9 +57,15 @@ const toForm = (l: LectureResponse): LectureForm => ({
   })),
 })
 
+/** 주소: ?semNo= (대시보드에서 학기를 정해 넘어온다) */
 export default function LecturesPage() {
   const toast = useToast()
-  const [semNo, setSemNo] = useState<number | null>(null)
+  const [params, setParams] = useSearchParams()
+  const semNo = Number(params.get('semNo')) || null
+  const setSemNo = useCallback(
+    (s: number) => setParams({ semNo: String(s) }, { replace: true }),
+    [setParams],
+  )
   const { data, error, loading, reload } = useAsync(
     () => (semNo != null ? adminApi.lectures(semNo) : Promise.resolve(null)),
     [semNo],
@@ -111,6 +118,11 @@ export default function LecturesPage() {
           </>
         }
       />
+      <p className="muted small">
+        개설은 장바구니 기간 전까지, 수정·폐강은 정정 기간이 끝나기 전까지 할 수 있습니다.
+        수강신청이 시작되면 강의시간·수업유형은 바꿀 수 없고 강의실·교수·정원만 바꿀 수 있습니다.
+        신청 인원을 누르면 신청 현황으로 갑니다.
+      </p>
       {error && <ErrorBox message={error} onRetry={reload} />}
       {loading && !data && <Loading />}
       {data &&
@@ -144,7 +156,15 @@ export default function LecturesPage() {
                     <td>{formatSlots(l.timeSlots)}</td>
                     <td>{formatPlaces(l.timeSlots)}</td>
                     <td className="num">{l.cap}</td>
-                    <td className="num">{l.enrlCnt}</td>
+                    <td className="num">
+                      {l.lecStat === 'OPEN' ? (
+                        <Link to={`/admin/enrollments?semNo=${l.semNo}&lecNo=${l.lecNo}`}>
+                          {l.enrlCnt}
+                        </Link>
+                      ) : (
+                        l.enrlCnt
+                      )}
+                    </td>
                     <td>
                       {l.engLec && <Badge tone="blue">EN</Badge>}
                       {l.relGrdExmp && <Badge>상대평가 제외</Badge>}

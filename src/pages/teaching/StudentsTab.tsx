@@ -1,13 +1,18 @@
-// LEC-02 수강생 명단. 볼 수 있는 시기인지는 서버가 판단한다.
+// LEC-02 수강생 명단. 신청(정정) 기간이 끝난 뒤부터 볼 수 있고, 시기는 서버가 판단한다.
 import { teachingApi } from '../../api'
-import { Empty, ErrorBox, Loading } from '../../components/ui'
+import { Empty, ErrorBox, Loading, Notice } from '../../components/ui'
 import { useAsync } from '../../hooks/useAsync'
 import { useDetail } from './LectureDetailLayout'
 
 export default function StudentsTab() {
   const { lecNo } = useDetail()
-  const { data, error, loading, reload } = useAsync(() => teachingApi.students(lecNo), [lecNo])
+  const { data, error, errorCode, loading, reload } = useAsync(
+    () => teachingApi.students(lecNo),
+    [lecNo],
+  )
 
+  if (errorCode === 'ROSTER_NOT_OPEN')
+    return <Notice>수강신청·정정 기간이 끝난 뒤에 수강생 명단을 볼 수 있습니다.</Notice>
   if (error) return <ErrorBox message={error} onRetry={reload} />
   if (loading && !data) return <Loading />
   if (!data) return null

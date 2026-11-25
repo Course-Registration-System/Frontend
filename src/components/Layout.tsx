@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { authApi } from '../api'
 import { errorMessage } from '../api/client'
-import { homePath, useAuth } from '../auth/AuthContext'
+import { homePath, isUndergraduate, useAuth } from '../auth/AuthContext'
 import { ROLE_LABEL, SCHD_TYPE_LABEL } from '../lib/format'
 import type { MyInfo, Role } from '../types'
 import { useToast } from './Toast'
@@ -42,7 +42,17 @@ function menuFor(user: MyInfo): MenuGroup[] {
       { title: '강의 검색', items: [{ to: '/teaching/search', label: '강의 검색' }] },
     ]
 
-  // 학생 (조교 포함). 학적상태로 신청할 수 없는 학생은 서버가 막는다
+  // 학생 (조교 포함). 대학원생은 장바구니·수강신청 대상이 아니라 수강신청 메뉴를 빼고 강의 운영을 앞에 둔다.
+  // 학적상태로 신청할 수 없는 학부생은 서버가 막는다
+  const teaching: MenuGroup = {
+    title: '강의 운영',
+    items: [{ to: '/teaching/lectures', label: '배정된 강의' }],
+  }
+  const grades: MenuGroup = {
+    title: '성적',
+    items: [{ to: '/student/grades', label: '성적 조회' }],
+  }
+  if (!isUndergraduate(user)) return user.ta ? [teaching, grades] : [grades]
   const groups: MenuGroup[] = [
     {
       title: '수강신청',
@@ -51,10 +61,9 @@ function menuFor(user: MyInfo): MenuGroup[] {
         { to: '/student/timetable', label: '시간표' },
       ],
     },
-    { title: '성적', items: [{ to: '/student/grades', label: '성적 조회' }] },
+    grades,
   ]
-  if (user.ta)
-    groups.push({ title: '강의 운영', items: [{ to: '/teaching/lectures', label: '배정된 강의' }] })
+  if (user.ta) groups.push(teaching)
   return groups
 }
 
@@ -95,7 +104,7 @@ export function AppLayout() {
             ))}
           </nav>
           <div className="topbar-right">
-            {user.role === 'STUDENT' && (
+            {isUndergraduate(user) && (
               <span className="period-chip">
                 <b>{period?.type ? `${SCHD_TYPE_LABEL[period.type]} 기간` : '신청 기간 아님'}</b>
               </span>
@@ -103,7 +112,9 @@ export function AppLayout() {
             <span className="who">
               {user.usrNm}
               <small>
-                {ROLE_LABEL[user.role]}
+                {user.role === 'STUDENT' && !isUndergraduate(user)
+                  ? '대학원생'
+                  : ROLE_LABEL[user.role]}
                 {user.ta ? '·조교' : ''} · {user.usrNo}
               </small>
             </span>
@@ -197,19 +208,26 @@ function PasswordModal({ onClose }: { onClose: () => void }) {
   )
 }
 
-/** 로그인·역할 검사. allowAssistant 면 조교로 배정된 학생도 통과 */
+/**
+ * 로그인·역할 검사. allowAssistant 면 조교로 배정된 학생도 통과,
+ * undergraduateOnly 면 대학원생(10자리)은 막는다 (장바구니·수강신청·시간표)
+ */
 export function RequireRole({
   roles,
   allowAssistant,
+  undergraduateOnly,
 }: {
   roles: Role[]
   allowAssistant?: boolean
+  undergraduateOnly?: boolean
 }) {
   const { user, loading } = useAuth()
   const location = useLocation()
   if (loading) return null
   if (!user) return <Navigate to="/" replace state={{ from: location.pathname }} />
-  const ok = roles.includes(user.role) || (allowAssistant && user.role === 'STUDENT' && user.ta)
+  const ok =
+    (roles.includes(user.role) && !(undergraduateOnly && !isUndergraduate(user))) ||
+    (allowAssistant && user.role === 'STUDENT' && user.ta)
   if (!ok) return <Navigate to={homePath(user)} replace />
   return <Outlet />
 }

@@ -15,7 +15,7 @@ import {
   PageHeader,
 } from '../../components/ui'
 import { useAsync } from '../../hooks/useAsync'
-import { ROLE_LABEL, STD_STAT_LABEL, YR_LVLS } from '../../lib/format'
+import { isGraduateNo, ROLE_LABEL, STD_STAT_LABEL, YR_LVLS } from '../../lib/format'
 import type { Role, StdStat, UserResponse } from '../../types'
 
 /** 등록·수정 폼 (관리자 계정은 이 화면에서 만들지 않는다) */
@@ -149,7 +149,11 @@ export default function UsersPage() {
                     <tr key={u.usrNo} className={active ? '' : 'row-muted'}>
                       <td className="mono">{u.usrNo}</td>
                       <td>{u.usrNm}</td>
-                      <td>{ROLE_LABEL[u.role]}</td>
+                      <td>
+                        {u.role === 'STUDENT' && isGraduateNo(u.usrNo)
+                          ? '대학원생'
+                          : ROLE_LABEL[u.role]}
+                      </td>
                       <td>{u.deptNm ?? '-'}</td>
                       <td>
                         {u.role === 'STUDENT'
@@ -283,7 +287,13 @@ function UserModal({
         </Field>
         <Field
           label={isStudent ? '학번' : '교번'}
-          hint={mode === 'edit' ? '등록 후 바꿀 수 없습니다.' : undefined}
+          hint={
+            mode === 'edit'
+              ? '등록 후 바꿀 수 없습니다.'
+              : isStudent
+                ? '학부생 8자리, 대학원생 10자리 숫자 (대학원생은 조교로만 쓰고 수강신청 대상이 아님)'
+                : '6자리 숫자'
+          }
         >
           <input
             value={f.usrNo}

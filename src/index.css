@@ -1003,3 +1003,9 @@ td > .badge:first-child,
     padding: 0 16px;
   }
 }
+
+.plain-list {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.8;
+}

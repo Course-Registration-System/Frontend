@@ -19,6 +19,7 @@ import { CMPL_TYPES, cmplLabel, EVAL_TYPE_LABEL, MIN_GRADES, YR_LVLS } from '../
 import type {
   CmplType,
   CourseResponse,
+  CourseSearchParams,
   EvalType,
   MinGrade,
   PrerequisiteResponse,
@@ -51,12 +52,15 @@ const samePrereqs = (a: PrerequisiteResponse[], b: PrerequisiteResponse[]) =>
   a.every((p) => b.some((q) => q.prereqCrsCd === p.prereqCrsCd && q.minReqGrd === p.minReqGrd))
 
 export default function CoursesPage() {
-  const { data, error, loading, reload } = useAsync(() => adminApi.courses(), [])
+  // 검색 조건은 서버에서 거른다. 선수과목 후보는 전체 과목이 필요해 따로 불러온다
+  const [deptNo, setDeptNo] = useState<number | null>(null)
+  const [cmplType, setCmplType] = useState('')
   const [keyword, setKeyword] = useState('')
+  const [query, setQuery] = useState<CourseSearchParams>({})
+  const { data, error, loading, reload } = useAsync(() => adminApi.courses(query), [query])
+  const all = useAsync(() => adminApi.courses(), [])
   const [editing, setEditing] = useState<{ mode: 'new' | 'edit'; course: CourseForm } | null>(null)
-  const list = (data ?? []).filter(
-    (c) => !keyword || c.crsCd.includes(keyword) || c.crsNm.includes(keyword),
-  )
+  const list = data ?? []
 
   return (
     <>
@@ -71,12 +75,40 @@ export default function CoursesPage() {
           </button>
         }
       />
-      <div className="filters">
+      <form
+        className="filters"
+        onSubmit={(e) => {
+          e.preventDefault()
+          setQuery({
+            deptNo: deptNo ?? undefined,
+            cmplType: (cmplType || undefined) as CmplType | undefined,
+            keyword: keyword.trim() || undefined,
+          })
+        }}
+      >
         <label>
+          학과
+          <DeptSelect value={deptNo} onChange={setDeptNo} allLabel="전체" />
+        </label>
+        <label>
+          이수구분
+          <select value={cmplType} onChange={(e) => setCmplType(e.target.value)}>
+            <option value="">전체</option>
+            {CMPL_TYPES.map((c) => (
+              <option key={c} value={c}>
+                {cmplLabel(c)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="grow">
           과목코드·과목명
           <input value={keyword} onChange={(e) => setKeyword(e.target.value)} />
         </label>
-      </div>
+        <div className="filters-actions">
+          <button className="btn btn-primary">검색</button>
+        </div>
+      </form>
       {error && <ErrorBox message={error} onRetry={reload} />}
       {loading && !data && <Loading />}
       {data &&
@@ -129,15 +161,16 @@ export default function CoursesPage() {
             </table>
           </div>
         ))}
-      {editing && data && (
+      {editing && (
         <CourseModal
           mode={editing.mode}
           initial={editing.course}
-          courses={data}
+          courses={all.data ?? []}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null)
             reload()
+            all.reload()
           }}
         />
       )}
@@ -266,7 +299,14 @@ function CourseModal({
             ))}
           </select>
         </Field>
-        <Field label="평가방식">
+        <Field
+          label="평가방식"
+          hint={
+            mode === 'edit'
+              ? '개설된 강의가 있으면 과목명·권장학년만 바꿀 수 있습니다.'
+              : '채플은 0.5학점 P/F 여야 합니다.'
+          }
+        >
           <select value={f.evalType} onChange={(e) => set('evalType', e.target.value as EvalType)}>
             <option value="GRADE">{EVAL_TYPE_LABEL.GRADE}</option>
             <option value="PASS_FAIL">{EVAL_TYPE_LABEL.PASS_FAIL}</option>

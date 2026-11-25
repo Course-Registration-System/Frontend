@@ -32,10 +32,15 @@ export default function App() {
             <Route path="/" element={<LandingPage />} />
             <Route path="/login" element={<Navigate to="/" replace />} />
 
-            <Route element={<RequireRole roles={['STUDENT']} />}>
+            {/* 장바구니·수강신청·시간표는 학부생만 (대학원생은 대상이 아님) */}
+            <Route element={<RequireRole roles={['STUDENT']} undergraduateOnly />}>
               <Route element={<AppLayout />}>
                 <Route path="/student/registration" element={<RegistrationPage />} />
                 <Route path="/student/timetable" element={<TimetablePage />} />
+              </Route>
+            </Route>
+            <Route element={<RequireRole roles={['STUDENT']} />}>
+              <Route element={<AppLayout />}>
                 <Route path="/student/grades" element={<GradesPage />} />
               </Route>
             </Route>

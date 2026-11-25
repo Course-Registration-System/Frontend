@@ -140,7 +140,9 @@ export function LectureSearch({
           <Empty>조건에 맞는 강의가 없습니다.</Empty>
         ) : (
           <>
-            <p className="muted small">검색 결과 {data.total}건</p>
+            <p className="muted small">
+              검색 결과 {data.total}건 · 권장학년이 없는 과목(교양·채플 등)은 모든 학년에 나옵니다.
+            </p>
             <LectureTable
               rows={data.items.map((l) => ({ ...l, hasPlan: !!l.planFile }))}
               actions={actions}
@@ -183,7 +185,10 @@ export interface LectureRow {
   profNm: string
   timeSlots: TimeSlot[]
   cap?: number
+  enrlCnt?: number
   remaining?: number
+  /** 권장학년. null 이면 권장학년 없음(교양·채플 등) */
+  rcmdYrLvl?: number | null
   engLec?: boolean
   evalType?: string
   hasPlan?: boolean
@@ -224,6 +229,8 @@ export function LectureTable<R extends LectureRow>({
   extra?: { head: string; cell: (r: R, i: number) => ReactNode; num?: boolean }[]
 }) {
   const showCap = rows.some((r) => r.cap != null)
+  const showEnrl = rows.some((r) => r.enrlCnt != null)
+  const showYr = rows.some((r) => r.rcmdYrLvl !== undefined)
   const showPlan = rows.some((r) => r.hasPlan != null)
   return (
     <div className="table-wrap">
@@ -240,15 +247,13 @@ export function LectureTable<R extends LectureRow>({
             <th>분반</th>
             <th className="num">학점</th>
             <th>이수구분</th>
+            {showYr && <th className="num">권장학년</th>}
             <th>교수명</th>
             <th>요일·시간</th>
             <th>강의실</th>
-            {showCap && (
-              <>
-                <th className="num">정원</th>
-                <th className="num">잔여</th>
-              </>
-            )}
+            {showCap && <th className="num">정원</th>}
+            {showEnrl && <th className="num">신청</th>}
+            {showCap && <th className="num">잔여</th>}
             {showPlan && <th>계획서</th>}
             {actions && <th />}
           </tr>
@@ -270,20 +275,20 @@ export function LectureTable<R extends LectureRow>({
               <td>{r.sectNo}</td>
               <td className="num">{r.crdt}</td>
               <td>{cmplLabel(r.cmplType)}</td>
+              {showYr && <td className="num">{r.rcmdYrLvl ?? '전체'}</td>}
               <td>{r.profNm}</td>
               <td>{formatSlots(r.timeSlots)}</td>
               <td>{formatPlaces(r.timeSlots)}</td>
+              {showCap && <td className="num">{r.cap}</td>}
+              {showEnrl && <td className="num">{r.enrlCnt}</td>}
               {showCap && (
-                <>
-                  <td className="num">{r.cap}</td>
-                  <td className="num">
-                    {r.remaining != null && r.remaining <= 0 ? (
-                      <Badge tone="red">마감</Badge>
-                    ) : (
-                      r.remaining
-                    )}
-                  </td>
-                </>
+                <td className="num">
+                  {r.remaining != null && r.remaining <= 0 ? (
+                    <Badge tone="red">마감</Badge>
+                  ) : (
+                    r.remaining
+                  )}
+                </td>
               )}
               {showPlan && (
                 <td>

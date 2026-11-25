@@ -29,7 +29,7 @@ export default function DashboardPage() {
               label="강의실 미배정 강의"
               value={
                 <Link
-                  to="/admin/lectures"
+                  to={`/admin/lectures?semNo=${data.semNo}`}
                   className={data.unassignedLectureCount ? 'text-warn' : ''}
                 >
                   {data.unassignedLectureCount}개
@@ -60,7 +60,9 @@ export default function DashboardPage() {
                       {data.fullLectures.map((l) => (
                         <tr key={l.lecNo}>
                           <td>
-                            <Link to={`/admin/enrollments?lecNo=${l.lecNo}`}>{l.crsNm}</Link>
+                            <Link to={`/admin/enrollments?semNo=${data.semNo}&lecNo=${l.lecNo}`}>
+                              {l.crsNm}
+                            </Link>
                           </td>
                           <td>{l.sectNo}</td>
                           <td>{l.profNm}</td>
@@ -76,6 +78,10 @@ export default function DashboardPage() {
 
             <section className="card">
               <h2>강의계획서 미제출 강의</h2>
+              <p className="muted small">
+                계획서 파일이 없거나, 등급제 과목인데 반영 비율이 없는 강의입니다. 폐강 강의는
+                뺍니다.
+              </p>
               {data.missingPlanLectures.length === 0 ? (
                 <Empty>미제출 강의가 없습니다.</Empty>
               ) : (
@@ -93,7 +99,9 @@ export default function DashboardPage() {
                     <tbody>
                       {data.missingPlanLectures.map((l) => (
                         <tr key={l.lecNo}>
-                          <td>{l.crsNm}</td>
+                          <td>
+                            <Link to={`/admin/lectures?semNo=${data.semNo}`}>{l.crsNm}</Link>
+                          </td>
                           <td>{l.sectNo}</td>
                           <td>{l.profNm}</td>
                           <td>

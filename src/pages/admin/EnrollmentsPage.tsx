@@ -1,6 +1,6 @@
 // REG-05 수강신청 현황 관리: 강의별 현황 조회, 관리자 추가·취소
 // 추가·취소할 수 있는 기간인지는 서버가 판단하고, 거절되면 사유를 그대로 보여준다.
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useSearchParams } from 'react-router'
 import { adminApi } from '../../api'
@@ -19,10 +19,19 @@ import { useAsync } from '../../hooks/useAsync'
 import { formatDateTime, formatSlots, PROC_TYPE_LABEL } from '../../lib/format'
 import type { LectureResponse } from '../../types'
 
+/** 주소: ?semNo=&lecNo= (대시보드·강의 개설 화면에서 강의를 골라 넘어온다) */
 export default function AdminEnrollmentsPage() {
-  const [semNo, setSemNo] = useState<number | null>(null)
   const [params, setParams] = useSearchParams()
+  const semNo = Number(params.get('semNo')) || null
   const lecNo = Number(params.get('lecNo')) || null
+  // 학기를 바꾸면 고른 강의는 비운다
+  const setSemNo = useCallback(
+    (s: number) =>
+      setParams((p) => (Number(p.get('semNo')) === s ? p : { semNo: String(s) }), {
+        replace: true,
+      }),
+    [setParams],
+  )
   const lectures = useAsync(
     () => (semNo != null ? adminApi.lectures(semNo) : Promise.resolve(null)),
     [semNo],
@@ -41,7 +50,12 @@ export default function AdminEnrollmentsPage() {
           강의
           <select
             value={lecNo ?? ''}
-            onChange={(e) => setParams(e.target.value ? { lecNo: e.target.value } : {})}
+            onChange={(e) =>
+              setParams({
+                ...(semNo ? { semNo: String(semNo) } : {}),
+                ...(e.target.value ? { lecNo: e.target.value } : {}),
+              })
+            }
           >
             <option value="">강의를 고르세요</option>
             {open.map((l) => (
@@ -132,6 +146,10 @@ function Status({
       </div>
       <section className="card">
         <h2>수강 추가</h2>
+        <p className="muted small">
+          학생 신청과 같은 검사를 거치고, 정원이 차 있으면 정원을 1 늘려 추가합니다. 첫
+          수강신청일부터 정정 종료 전까지 할 수 있습니다.
+        </p>
         <form className="inline-form" onSubmit={add}>
           <input
             placeholder="학번"

@@ -21,6 +21,9 @@ export const tokenStore = {
 }
 
 /** 백엔드 오류. code 는 ProblemDetail 의 code (API-명세서 21절). 연결 실패면 status 0 */
+/** 토큰이 만료·무효라 401 이 오면 이 이벤트를 보낸다. AuthProvider 가 받아 로그아웃한다 */
+export const AUTH_EXPIRED_EVENT = 'crs:auth-expired'
+
 export class ApiError extends Error {
   status: number
   code?: string
@@ -84,7 +87,14 @@ export async function request<T>(
   } catch {
     throw new ApiError(0, '서버에 연결할 수 없습니다.')
   }
-  if (!res.ok) throw await readError(res, `요청에 실패했습니다 (HTTP ${res.status})`)
+  if (!res.ok) {
+    // 로그인 실패(LOGIN_FAILED)도 401 이라, 토큰을 보낸 요청만 만료로 본다
+    if (res.status === 401 && token) {
+      tokenStore.set(null)
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+    }
+    throw await readError(res, `요청에 실패했습니다 (HTTP ${res.status})`)
+  }
   if (res.status === 204) return undefined as T
   const text = await res.text()
   return (text ? JSON.parse(text) : undefined) as T

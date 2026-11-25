@@ -4,7 +4,16 @@ import type { FormEvent } from 'react'
 import { adminApi, commonApi } from '../../api'
 import { errorMessage } from '../../api/client'
 import { useToast } from '../../components/Toast'
-import { Badge, Empty, ErrorBox, Field, Loading, Modal, PageHeader } from '../../components/ui'
+import {
+  Badge,
+  Empty,
+  ErrorBox,
+  Field,
+  Loading,
+  Modal,
+  Notice,
+  PageHeader,
+} from '../../components/ui'
 import { useAsync } from '../../hooks/useAsync'
 import {
   formatDateTime,
@@ -17,7 +26,13 @@ import {
   toLocalDateTime,
   YR_LVLS,
 } from '../../lib/format'
-import type { ScheduleRequest, SchdType, SemesterResponse, SemType } from '../../types'
+import type {
+  MaxCreditResult,
+  ScheduleRequest,
+  SchdType,
+  SemesterResponse,
+  SemType,
+} from '../../types'
 
 export default function SemestersPage() {
   const toast = useToast()
@@ -213,6 +228,10 @@ function Schedules({ semNo }: { semNo: number }) {
   return (
     <section className="card">
       <h2>학사일정</h2>
+      <p className="muted small">
+        장바구니 → 수강신청 → 정정 → 성적입력 순서로 등록합니다. 대상학년은 수강신청 일정에만
+        지정합니다. 이미 시작된 일정은 삭제할 수 없습니다.
+      </p>
       {error && <ErrorBox message={error} onRetry={reload} />}
       {loading && !data && <Loading />}
       {data &&
@@ -312,16 +331,18 @@ function MaxCredits({ semNo }: { semNo: number }) {
   const { data, error, loading, reload } = useAsync(() => adminApi.maxCredits(semNo), [semNo])
   const [busy, setBusy] = useState(false)
 
+  const [result, setResult] = useState<MaxCreditResult | null>(null)
+  // 최대학점별 학생 수 (결과 표 위 요약)
+  const counts = new Map<number, number>()
+  for (const r of data ?? []) counts.set(r.maxCrdt, (counts.get(r.maxCrdt) ?? 0) + 1)
+
   const run = async () => {
-    if (data?.length && !confirm('다시 산정하면 이 학기 결과를 새로 계산합니다.')) return
+    if (data?.length && !confirm('다시 산정하면 이 학기 결과를 지우고 새로 계산합니다.')) return
     setBusy(true)
     try {
       const r = await adminApi.runMaxCredits(semNo)
-      toast(
-        r.regular
-          ? `진급·졸업 처리(졸업 ${r.graduated}명)와 최대학점 산정을 마쳤습니다.`
-          : '최대학점 산정을 마쳤습니다.',
-      )
+      setResult(r)
+      toast('최대학점 산정을 마쳤습니다.')
       reload()
     } catch (e) {
       toast(errorMessage(e), 'error')
@@ -338,38 +359,60 @@ function MaxCredits({ semNo }: { semNo: number }) {
           {data?.length ? '다시 산정' : '산정 실행'}
         </button>
       </div>
+      <p className="muted small">
+        정규학기: 학년 재계산 → 졸업 처리 → 직전 정규학기 평점 4.0 이상 21학점, 아니면 18학점
+        (재학생만). 계절학기: 재학 6학점, 휴학 3학점. 일정이 시작되기 전까지 다시 실행할 수
+        있습니다.
+      </p>
+      {result && (
+        <Notice>
+          방금 산정 결과: {result.regular ? `졸업 처리 ${result.graduated}명 · ` : ''}
+          {Object.entries(result.counts)
+            .map(([crdt, n]) => `${crdt}학점 ${n}명`)
+            .join(' · ') || '대상 학생 없음'}
+        </Notice>
+      )}
       {error && <ErrorBox message={error} onRetry={reload} />}
       {loading && !data && <Loading />}
       {data &&
         (data.length === 0 ? (
           <Empty>아직 산정하지 않았습니다.</Empty>
         ) : (
-          <div className="table-wrap scroll-y">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>학번</th>
-                  <th>이름</th>
-                  <th className="num">학년</th>
-                  <th>학적상태</th>
-                  <th className="num">최대학점</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.map((r) => (
-                  <tr key={r.stdNo}>
-                    <td className="mono">{r.stdNo}</td>
-                    <td>{r.usrNm}</td>
-                    <td className="num">{r.yrLvl}</td>
-                    <td>{STD_STAT_LABEL[r.stdStat]}</td>
-                    <td className="num">
-                      <b>{r.maxCrdt}</b>
-                    </td>
+          <>
+            <p className="muted small">
+              총 {data.length}명 ·{' '}
+              {[...counts.entries()]
+                .sort(([a], [b]) => a - b)
+                .map(([crdt, n]) => `${crdt}학점 ${n}명`)
+                .join(' · ')}
+            </p>
+            <div className="table-wrap scroll-y">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>학번</th>
+                    <th>이름</th>
+                    <th className="num">학년</th>
+                    <th>학적상태</th>
+                    <th className="num">최대학점</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {data.map((r) => (
+                    <tr key={r.stdNo}>
+                      <td className="mono">{r.stdNo}</td>
+                      <td>{r.usrNm}</td>
+                      <td className="num">{r.yrLvl}</td>
+                      <td>{STD_STAT_LABEL[r.stdStat]}</td>
+                      <td className="num">
+                        <b>{r.maxCrdt}</b>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         ))}
     </section>
   )

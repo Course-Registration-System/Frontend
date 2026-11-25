@@ -117,6 +117,9 @@ export const STD_STAT_LABEL: Record<StdStat, string> = {
 
 export const PROC_TYPE_LABEL: Record<ProcType, string> = { STUDENT: '학생', ADMIN: '관리자' }
 
+/** 대학원생 학번은 10자리. 장바구니·수강신청 대상이 아니고 조교로만 쓴다 */
+export const isGraduateNo = (usrNo: string) => /^\d{10}$/.test(usrNo)
+
 const pad = (n: number) => String(n).padStart(2, '0')
 
 /** 일시를 'YYYY-MM-DD HH:mm' 로 */

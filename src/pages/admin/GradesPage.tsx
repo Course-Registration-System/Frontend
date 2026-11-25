@@ -1,4 +1,4 @@
-// GRD-02 성적 확정 (Backend feat/grade-confirm 브랜치 기준, 아직 main 에 없음)
+// GRD-02 성적 확정. 제출된 강의만 고를 수 있고, 하나라도 걸리면 서버가 전부 확정하지 않는다.
 import { useState } from 'react'
 import { adminApi } from '../../api'
 import { errorMessage } from '../../api/client'
@@ -46,8 +46,8 @@ export default function AdminGradesPage() {
       return
     setBusy(true)
     try {
-      await adminApi.confirmGrades(lecNos)
-      toast('확정했습니다.')
+      const r = await adminApi.confirmGrades(lecNos)
+      toast(`${r.confirmed.length}개 강의의 성적을 확정했습니다.`)
       setChecked(new Set())
       reload()
     } catch (e) {
@@ -84,9 +84,13 @@ export default function AdminGradesPage() {
               {data.gradeEnd && ` (성적 입력 기간 종료: ${formatDateTime(data.gradeEnd)})`}.
             </Notice>
           )}
+          <p className="muted small">
+            상태별 강의 수는 아래 거르기와 상관없이 학기 전체 기준입니다(폐강 제외). 미입력·입력중
+            강의는 교수에게 연락해 제출을 받으세요.
+          </p>
           <div className="stats">
             {STATS.map((s) => (
-              <Stat key={s} label={GRD_STAT_LABEL[s]} value={data.counts[s] ?? 0} />
+              <Stat key={s} label={GRD_STAT_LABEL[s]} value={`${data.counts[s]}개`} />
             ))}
           </div>
           <div className="seg seg-lg">
@@ -125,6 +129,7 @@ export default function AdminGradesPage() {
                     <th>과목명</th>
                     <th>분반</th>
                     <th>교수명</th>
+                    <th>연락처</th>
                     <th className="num">수강 인원</th>
                     <th>성적상태</th>
                     <th>확정일시</th>
@@ -144,12 +149,9 @@ export default function AdminGradesPage() {
                       <td className="mono">{l.crsCd}</td>
                       <td>{l.crsNm}</td>
                       <td>{l.sectNo}</td>
+                      <td>{l.profNm}</td>
                       <td>
-                        {l.grdStat === 'NOT_ENTERED' && l.profEmail ? (
-                          <a href={`mailto:${l.profEmail}`}>{l.profNm}</a>
-                        ) : (
-                          l.profNm
-                        )}
+                        {l.profEmail ? <a href={`mailto:${l.profEmail}`}>{l.profEmail}</a> : '-'}
                       </td>
                       <td className="num">{l.enrlCnt}</td>
                       <td>
