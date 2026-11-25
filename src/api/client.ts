@@ -20,12 +20,30 @@ export const tokenStore = {
   },
 }
 
+/** 백엔드 오류. code 는 ProblemDetail 의 code (API-명세서 21절). 연결 실패면 status 0 */
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
+}
+
+async function readError(res: Response, fallback: string): Promise<ApiError> {
+  let message = fallback
+  let code: string | undefined
+  try {
+    // 백엔드는 ProblemDetail 로 보낸다: { status, detail, code }
+    const data = await res.json()
+    if (data?.detail) message = data.detail
+    else if (data?.message) message = data.message
+    if (typeof data?.code === 'string') code = data.code
+  } catch {
+    /* 본문 없음 */
+  }
+  return new ApiError(res.status, message, code)
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -46,11 +64,6 @@ export async function request<T>(
   path: string,
   opts: { query?: Query; body?: unknown } = {},
 ): Promise<T> {
-  // npm run dev:mock 일 때만 목 서버로 보낸다. 일반 빌드에서는 이 분기와 목 코드가 빠진다.
-  if (import.meta.env.VITE_USE_MOCK === 'true') {
-    const { mockRequest } = await import('../mock/server')
-    return mockRequest<T>(method, path, opts)
-  }
   const token = tokenStore.get()
   const isForm = opts.body instanceof FormData
   let res: Response
@@ -71,18 +84,7 @@ export async function request<T>(
   } catch {
     throw new ApiError(0, '서버에 연결할 수 없습니다.')
   }
-  if (!res.ok) {
-    let message = `요청에 실패했습니다 (HTTP ${res.status})`
-    try {
-      // 백엔드는 ProblemDetail 로 보낸다: { status, detail, code }
-      const data = await res.json()
-      if (data?.detail) message = data.detail
-      else if (data?.message) message = data.message
-    } catch {
-      /* 본문 없음 */
-    }
-    throw new ApiError(res.status, message)
-  }
+  if (!res.ok) throw await readError(res, `요청에 실패했습니다 (HTTP ${res.status})`)
   if (res.status === 204) return undefined as T
   const text = await res.text()
   return (text ? JSON.parse(text) : undefined) as T
@@ -90,10 +92,6 @@ export async function request<T>(
 
 /** 파일 받기 (인증 헤더가 필요해서 a href 로 열 수 없다) */
 export async function requestBlob(path: string): Promise<Blob> {
-  if (import.meta.env.VITE_USE_MOCK === 'true') {
-    const { mockBlob } = await import('../mock/server')
-    return mockBlob(path)
-  }
   const token = tokenStore.get()
   let res: Response
   try {
@@ -101,16 +99,7 @@ export async function requestBlob(path: string): Promise<Blob> {
   } catch {
     throw new ApiError(0, '서버에 연결할 수 없습니다.')
   }
-  if (!res.ok) {
-    let message = `파일을 받지 못했습니다 (HTTP ${res.status})`
-    try {
-      const data = await res.json()
-      if (data?.detail) message = data.detail
-    } catch {
-      /* 본문 없음 */
-    }
-    throw new ApiError(res.status, message)
-  }
+  if (!res.ok) throw await readError(res, `파일을 받지 못했습니다 (HTTP ${res.status})`)
   return res.blob()
 }
 

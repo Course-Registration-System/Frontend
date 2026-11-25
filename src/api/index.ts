@@ -1,17 +1,21 @@
-// 업무별 API 함수. 경로·메서드·본문은 Backend 컨트롤러와 같다 (API-목록.md 참고).
+// 업무별 API 함수. 경로·메서드·본문은 API-명세서.md 와 같다 (절 번호는 주석의 기능 ID 로 찾는다).
 import type {
   CartResponse,
   CourseCreateRequest,
   CourseResponse,
+  CourseSearchParams,
   CourseUpdateRequest,
   DashboardResponse,
+  DemoScenario,
   EnrollmentResponse,
   EnrollmentStatusResponse,
+  GradeConfirmResponse,
   GradeInput,
   GradeReportResponse,
   GradeSheetResponse,
   GradeStatusResponse,
   GrdStat,
+  HealthResponse,
   LectureCreateRequest,
   LecturePlanResponse,
   LectureResponse,
@@ -54,7 +58,17 @@ export const commonApi = {
   schedules: (semNo: number) =>
     request<ScheduleResponse[]>('GET', `/api/semesters/${semNo}/schedules`),
   /** 서버(앱) 현재 시각. 시연용 시계를 옮겼으면 그 시각 */
-  health: () => request<{ status: string; time: string }>('GET', '/api/health'),
+  health: () => request<HealthResponse>('GET', '/api/health'),
+}
+
+// 시연용 (백엔드 demo 프로필에서만 있음, 토큰 불필요)
+export const devApi = {
+  clock: () => request<{ now: string }>('GET', '/api/dev/clock'),
+  /** at 을 빼면 실제 시각으로 돌아간다. 형식 "2027-02-11T10:05:00" */
+  setClock: (at?: string) => request<{ now: string }>('PUT', '/api/dev/clock', { query: { at } }),
+  /** s1_grade_close → s2_enroll_day → s3_adjust 순서로 한 번씩 */
+  applyScenario: (name: DemoScenario) =>
+    request<{ applied: DemoScenario }>('POST', `/api/dev/scenarios/${name}`),
 }
 
 // REG-01 강의 검색, LEC-03 계획서 내려받기
@@ -101,10 +115,9 @@ export const teachingApi = {
   removeAssistant: (lecNo: number, stdNo: string) =>
     request<TeachingAssistantListResponse>('DELETE', `${t(lecNo)}/assistants/${stdNo}`),
   gradeSheet: (lecNo: number) => request<GradeSheetResponse>('GET', `${t(lecNo)}/grades`),
+  /** 넣은 학생만 바뀐다. 한 명이라도 실패하면 아무것도 저장하지 않는다 */
   saveGrades: (lecNo: number, grades: GradeInput[]) =>
     request<GradeSheetResponse>('PUT', `${t(lecNo)}/grades`, { body: { grades } }),
-  saveCounts: (lecNo: number, aCnt: number | null, abCnt: number | null) =>
-    request<GradeSheetResponse>('PUT', `${t(lecNo)}/grades/counts`, { body: { aCnt, abCnt } }),
   submitGrades: (lecNo: number) => request<GradeSheetResponse>('POST', `${t(lecNo)}/grades/submit`),
 }
 
@@ -143,7 +156,9 @@ export const adminApi = {
     request<MaxCreditResult>('POST', `/api/admin/semesters/${semNo}/max-credits`),
 
   // ACA-02
-  courses: () => request<CourseResponse[]>('GET', '/api/admin/courses'),
+  courses: (params: CourseSearchParams = {}) =>
+    request<CourseResponse[]>('GET', '/api/admin/courses', { query: { ...params } }),
+  course: (crsCd: string) => request<CourseResponse>('GET', `/api/admin/courses/${crsCd}`),
   createCourse: (body: CourseCreateRequest) =>
     request<CourseResponse>('POST', '/api/admin/courses', { body }),
   updateCourse: (crsCd: string, body: CourseUpdateRequest) =>
@@ -156,6 +171,7 @@ export const adminApi = {
   // ACA-03
   lectures: (semNo: number) =>
     request<LectureResponse[]>('GET', '/api/admin/lectures', { query: { semNo } }),
+  lecture: (lecNo: number) => request<LectureResponse>('GET', `/api/admin/lectures/${lecNo}`),
   createLecture: (body: LectureCreateRequest) =>
     request<LectureResponse>('POST', '/api/admin/lectures', { body }),
   updateLecture: (lecNo: number, body: LectureUpdateRequest) =>
@@ -173,9 +189,10 @@ export const adminApi = {
   cancelEnrollment: (lecNo: number, stdNo: string) =>
     request<void>('DELETE', `/api/admin/lectures/${lecNo}/enrollments/${stdNo}`),
 
-  // GRD-02 (feat/grade-confirm 브랜치, 아직 main 에 없음)
+  // GRD-02
   gradeStatus: (semNo?: number, grdStat?: GrdStat) =>
     request<GradeStatusResponse>('GET', '/api/admin/grades', { query: { semNo, grdStat } }),
+  /** 하나라도 걸리면 전부 확정하지 않는다 */
   confirmGrades: (lecNos: number[]) =>
-    request<unknown>('POST', '/api/admin/grades/confirm', { body: { lecNos } }),
+    request<GradeConfirmResponse>('POST', '/api/admin/grades/confirm', { body: { lecNos } }),
 }

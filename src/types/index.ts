@@ -1,5 +1,5 @@
 // 백엔드 DTO 를 그대로 옮긴 타입. 필드 이름도 백엔드와 같다.
-// 기준: Backend main + PR #41(조교) #45(수강생) #46(성적 입력) #47(계획서), feat/grade-confirm(성적 확정)
+// 기준: API-명세서.md (2026-11-25, main 에 #41 #45 #47 #55 머지)
 
 /* ---------- 공통 enum ---------- */
 
@@ -31,10 +31,16 @@ export type ProcType = 'STUDENT' | 'ADMIN'
 export type MinGrade =
   'A+' | 'A0' | 'A-' | 'B+' | 'B0' | 'B-' | 'C+' | 'C0' | 'C-' | 'D+' | 'D0' | 'D-'
 
-/** 오류 응답 (Spring ProblemDetail + code) */
+/** 등급 문자열. P/F 과목은 P 또는 F */
+export type LetterGrade = MinGrade | 'F' | 'P'
+
+/** 오류 응답 (RFC 9457 ProblemDetail + code). 프론트는 code 로 경우를 나눈다 */
 export interface ProblemDetail {
+  type?: string
+  title?: string
   status: number
   detail?: string
+  instance?: string
   code?: string
 }
 
@@ -183,11 +189,22 @@ export interface CourseCreateRequest {
   prerequisites: PrerequisiteRequest[]
 }
 
+/** 수정 때 evalType 은 필수, rcmdYrLvl 을 빼면 null 로 지워진다 */
 export type CourseUpdateRequest = Omit<CourseCreateRequest, 'crsCd' | 'prerequisites'>
+
+export interface CourseSearchParams {
+  deptNo?: number
+  cmplType?: CmplType
+  /** 과목명·과목코드 일부 */
+  keyword?: string
+}
 
 /* ---------- 강의 (ACA-03, REG-01, LEC) ---------- */
 
-/** 강의시간 한 칸. 시각은 "09:00" 또는 "09:00:00". place 는 강의실명·"온라인"·"미배정" */
+/**
+ * 강의시간 한 칸(TimeSlotResponse). 시각은 "09:00" 또는 "09:00:00". place 는 강의실명·"온라인"·"미배정".
+ * 강의 검색·담당 강의 응답(LectureSearchSlot)에는 roomNm 이 없다
+ */
 export interface TimeSlot {
   dow: Dow
   startTm: string
@@ -195,8 +212,7 @@ export interface TimeSlot {
   clsType: ClsType
   roomCd: string | null
   roomNm?: string | null
-  /** main 의 강의 관리 응답에는 아직 없을 수 있다 */
-  place?: string
+  place: string
 }
 
 export interface TimeSlotRequest {
@@ -397,10 +413,9 @@ export interface EnrollmentStatusResponse {
 
 /* ---------- 성적 (GRD) ---------- */
 
-export interface GradeCounts {
+/** 상대평가 구역. A 구역 상한, A+B 구역 상한(교직이면 null). 인원은 소수점 아래 버림 */
+export interface GradeBands {
   enrolled: number
-  aCnt: number | null
-  abCnt: number | null
   aLimit: number
   abLimit: number | null
 }
@@ -409,21 +424,23 @@ export interface GradeSheetStudent {
   stdNo: string
   usrNm: string
   retake: boolean
+  /** 원점수 0~100 (소수 셋째 자리까지). P/F 과목은 null */
   midScr: number | null
   finScr: number | null
   hwScr: number | null
   attScr: number | null
-  /** 원점수 총점 (서버 계산) */
-  rawTotal: number | null
-  group: 'A' | 'B' | 'OTHER' | null
-  /** 최종점수 (서버 계산) */
+  /** 원점수 총점 (네 항목이 다 있을 때, 버림) */
   totScr: number | null
-  ltrGrd: string | null
+  /** 최종점수 */
+  fnlScr: number | null
+  ltrGrd: LetterGrade | null
+  /** 평점 (등급제만) */
   grdPt: number | null
+  /** 등급제는 네 항목 모두, P/F 는 P·F 가 들어갔는지 */
   entered: boolean
 }
 
-/** GRD-01. editable: 지금 저장·제출할 수 있는지, tieAtBoundary: 경계 동점자가 있어 제출 불가 */
+/** GRD-01. editable: 지금 저장·제출할 수 있는지(성적 입력 기간 안, 확정 전, 폐강 아님) */
 export interface GradeSheetResponse {
   lecNo: number
   crsCd: string
@@ -432,18 +449,24 @@ export interface GradeSheetResponse {
   grdStat: GrdStat
   editable: boolean
   evalMode: EvalMode
+  /** 등록 전이면 null (P/F 과목은 비율을 쓰지 않음) */
   weights: PlanWeights | null
-  counts: GradeCounts | null
-  tieAtBoundary: boolean
+  /** 상대평가가 아니면 null */
+  bands: GradeBands | null
   students: GradeSheetStudent[]
 }
 
+/**
+ * 저장할 학생 한 명. 넣은 값으로 그 학생 값을 통째로 바꾸고 null 은 비움.
+ * 등급제는 네 원점수만, P/F 과목은 ltrGrd(P·F)만 보낸다
+ */
 export interface GradeInput {
   stdNo: string
-  midScr: number | null
-  finScr: number | null
-  hwScr: number | null
-  attScr: number | null
+  midScr?: number | null
+  finScr?: number | null
+  hwScr?: number | null
+  attScr?: number | null
+  ltrGrd?: 'P' | 'F' | null
 }
 
 export interface GradeRow {
@@ -453,7 +476,8 @@ export interface GradeRow {
   crdt: number
   cmplType: CmplType
   evalType: EvalType
-  ltrGrd: string
+  ltrGrd: LetterGrade
+  /** 등급제만, P/F 는 null */
   gradePoint: number | null
   retake: boolean
   /** 누적 평점·학점에 들어가는지 (재수강 전 성적이면 false) */
@@ -487,16 +511,34 @@ export interface GradeStatusLecture {
   cnfmDtm: string | null
 }
 
-/** GRD-02. gradeEnd 부터 확정 가능, counts 는 성적상태별 강의 수 */
+/**
+ * GRD-02. gradeEnd 부터 확정 가능.
+ * counts 는 grdStat 필터와 상관없이 학기 전체(폐강 제외)의 상태별 강의 수이고 네 상태가 항상 있다
+ */
 export interface GradeStatusResponse {
   semNo: number
   yr: number
   semType: SemType
   gradeEnd: string | null
   confirmable: boolean
-  counts: Partial<Record<GrdStat, number>>
+  counts: Record<GrdStat, number>
   lectures: GradeStatusLecture[]
 }
+
+/** 확정 결과. 요청 순서와 상관없이 강의번호 순 */
+export interface GradeConfirmResponse {
+  confirmed: { lecNo: number; crsNm: string; grdStat: GrdStat; cnfmDtm: string }[]
+}
+
+/* ---------- 시스템·시연용 ---------- */
+
+/** time 은 앱의 현재 시각(시연용으로 고정했으면 그 시각) */
+export interface HealthResponse {
+  status: string
+  time: string
+}
+
+export type DemoScenario = 's1_grade_close' | 's2_enroll_day' | 's3_adjust'
 
 /* ---------- 화면용 ---------- */
 
