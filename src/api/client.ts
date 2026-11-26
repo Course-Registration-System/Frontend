@@ -1,4 +1,6 @@
-// 백엔드 호출 공통 함수. /api 요청은 vite 프록시로 백엔드에 전달된다.
+// 백엔드 호출 공통 함수. /api 요청은 상대 경로로 부르고,
+// 로컬은 vite 프록시, 배포는 vercel.json rewrite 가 백엔드로 넘긴다.
+import type { ErrorCode } from '../types'
 
 const TOKEN_KEY = 'crs.token'
 
@@ -20,14 +22,17 @@ export const tokenStore = {
   },
 }
 
-/** 백엔드 오류. code 는 ProblemDetail 의 code (API-명세서 21절). 연결 실패면 status 0 */
 /** 토큰이 만료·무효라 401 이 오면 이 이벤트를 보낸다. AuthProvider 가 받아 로그아웃한다 */
 export const AUTH_EXPIRED_EVENT = 'crs:auth-expired'
 
+/** 백엔드 오류 code. 명세에 없는 값이 와도 받을 수 있게 string 도 허용한다 */
+export type ApiErrorCode = ErrorCode | (string & {})
+
+/** 백엔드 오류. code 는 ProblemDetail 의 code (api.md 에러 코드 표). 연결 실패면 status 0 */
 export class ApiError extends Error {
   status: number
-  code?: string
-  constructor(status: number, message: string, code?: string) {
+  code?: ApiErrorCode
+  constructor(status: number, message: string, code?: ApiErrorCode) {
     super(message)
     this.status = status
     this.code = code
@@ -36,7 +41,7 @@ export class ApiError extends Error {
 
 async function readError(res: Response, fallback: string): Promise<ApiError> {
   let message = fallback
-  let code: string | undefined
+  let code: ApiErrorCode | undefined
   try {
     // 백엔드는 ProblemDetail 로 보낸다: { status, detail, code }
     const data = await res.json()
@@ -60,6 +65,14 @@ const withQuery = (path: string, query?: Query) => {
   }
   const s = q.toString()
   return s ? `${path}?${s}` : path
+}
+
+// 로그인 실패(LOGIN_FAILED)도 401 이라, 토큰을 보낸 요청만 만료로 본다
+function expireIfUnauthorized(res: Response, token: string | null) {
+  if (res.status === 401 && token) {
+    tokenStore.set(null)
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+  }
 }
 
 export async function request<T>(
@@ -88,11 +101,7 @@ export async function request<T>(
     throw new ApiError(0, '서버에 연결할 수 없습니다.')
   }
   if (!res.ok) {
-    // 로그인 실패(LOGIN_FAILED)도 401 이라, 토큰을 보낸 요청만 만료로 본다
-    if (res.status === 401 && token) {
-      tokenStore.set(null)
-      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
-    }
+    expireIfUnauthorized(res, token)
     throw await readError(res, `요청에 실패했습니다 (HTTP ${res.status})`)
   }
   if (res.status === 204) return undefined as T
@@ -109,7 +118,10 @@ export async function requestBlob(path: string): Promise<Blob> {
   } catch {
     throw new ApiError(0, '서버에 연결할 수 없습니다.')
   }
-  if (!res.ok) throw await readError(res, `파일을 받지 못했습니다 (HTTP ${res.status})`)
+  if (!res.ok) {
+    expireIfUnauthorized(res, token)
+    throw await readError(res, `파일을 받지 못했습니다 (HTTP ${res.status})`)
+  }
   return res.blob()
 }
 

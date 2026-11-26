@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, errorMessage } from '../api/client'
+import { ApiError, type ApiErrorCode, errorMessage } from '../api/client'
 
 /** 비동기 조회 공통 훅. deps 가 바뀌면 다시 불러온다. errorCode 는 백엔드 오류 code (예: ROSTER_NOT_OPEN) */
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [errorCode, setErrorCode] = useState<string | null>(null)
+  const [errorCode, setErrorCode] = useState<ApiErrorCode | null>(null)
   const [loading, setLoading] = useState(true)
   const fnRef = useRef(fn)
   fnRef.current = fn

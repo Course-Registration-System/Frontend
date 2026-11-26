@@ -1,4 +1,4 @@
-// 업무별 API 함수. 경로·메서드·본문은 API-명세서.md 와 같다 (절 번호는 주석의 기능 ID 로 찾는다).
+// 업무별 API 함수. 경로·메서드·본문은 api.md(2026-11-26, 엔드포인트 58개)와 같다.
 import type {
   CartResponse,
   CourseCreateRequest,

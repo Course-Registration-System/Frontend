@@ -1,5 +1,5 @@
 // 백엔드 DTO 를 그대로 옮긴 타입. 필드 이름도 백엔드와 같다.
-// 기준: API-명세서.md (2026-11-25, main 에 #41 #45 #47 #55 머지)
+// 기준: api.md (2026-11-26, 백엔드 main #57 머지 시점)
 
 /* ---------- 공통 enum ---------- */
 
@@ -34,6 +34,83 @@ export type MinGrade =
 /** 등급 문자열. P/F 과목은 P 또는 F */
 export type LetterGrade = MinGrade | 'F' | 'P'
 
+/** 백엔드 ErrorCode enum (74개). ProblemDetail.code 로 온다 */
+export type ErrorCode =
+  | 'INVALID_INPUT'
+  | 'UNAUTHENTICATED'
+  | 'FORBIDDEN'
+  | 'LOGIN_FAILED'
+  | 'ACCOUNT_INACTIVE'
+  | 'PASSWORD_MISMATCH'
+  | 'USER_NOT_FOUND'
+  | 'DEPARTMENT_NOT_FOUND'
+  | 'DUPLICATE_USER_NO'
+  | 'LECTURE_NOT_FOUND'
+  | 'COURSE_NOT_FOUND'
+  | 'SEMESTER_NOT_FOUND'
+  | 'DUPLICATE_SEMESTER'
+  | 'SEMESTER_IN_USE'
+  | 'SCHEDULE_NOT_FOUND'
+  | 'SCHEDULE_OVERLAP'
+  | 'SCHEDULE_ORDER'
+  | 'SCHEDULE_STARTED'
+  | 'GRADES_NOT_CONFIRMED'
+  | 'MAX_CREDIT_CLOSED'
+  | 'PROFESSOR_NOT_FOUND'
+  | 'CLASSROOM_NOT_FOUND'
+  | 'DUPLICATE_SECTION'
+  | 'LECTURE_OPEN_CLOSED'
+  | 'ROOM_TIME_CONFLICT'
+  | 'PROFESSOR_TIME_CONFLICT'
+  | 'UPDATE_PERIOD_OVER'
+  | 'TIME_CHANGE_CLOSED'
+  | 'CAPACITY_BELOW_ENROLLED'
+  | 'ROOM_REQUIRED'
+  | 'LECTURE_CLOSED'
+  | 'CLOSE_PERIOD_OVER'
+  | 'NO_REGISTRATION_SEMESTER'
+  | 'CART_CLOSED'
+  | 'STUDENT_STATUS_NOT_ALLOWED'
+  | 'GRADUATE_STUDENT_NOT_ALLOWED'
+  | 'OTHER_SEMESTER_LECTURE'
+  | 'DUPLICATE_CART'
+  | 'CART_NOT_FOUND'
+  | 'ENROLL_CLOSED'
+  | 'ALREADY_ENROLLED_COURSE'
+  | 'RETAKE_NOT_ALLOWED'
+  | 'RETAKE_LIMIT_EXCEEDED'
+  | 'LECTURE_FULL'
+  | 'TIME_CONFLICT'
+  | 'CREDIT_EXCEEDED'
+  | 'PREREQUISITE_NOT_MET'
+  | 'ENROLLMENT_NOT_FOUND'
+  | 'DUPLICATE_COURSE_CODE'
+  | 'INVALID_CHAPEL_COURSE'
+  | 'PREREQUISITE_SELF'
+  | 'PREREQUISITE_CYCLE'
+  | 'COURSE_IN_USE'
+  | 'PLAN_PERIOD_CLOSED'
+  | 'INVALID_PLAN_FILE'
+  | 'PLAN_FILE_TOO_LARGE'
+  | 'WEIGHT_SUM_INVALID'
+  | 'WEIGHTS_NOT_ALLOWED'
+  | 'PLAN_NOT_FOUND'
+  | 'ASSISTANT_NOT_GRADUATE'
+  | 'ASSISTANT_NOT_ELIGIBLE'
+  | 'DUPLICATE_ASSISTANT'
+  | 'ASSISTANT_NOT_FOUND'
+  | 'ASSISTANT_LECTURE_FINISHED'
+  | 'ROSTER_NOT_OPEN'
+  | 'GRADE_PERIOD_CLOSED'
+  | 'GRADE_CONFIRMED'
+  | 'WEIGHTS_NOT_SET'
+  | 'NOT_ENROLLED_STUDENT'
+  | 'GRADE_ALREADY_SUBMITTED'
+  | 'GRADE_INCOMPLETE'
+  | 'GRADE_TIE_AT_BOUNDARY'
+  | 'GRADE_PERIOD_NOT_OVER'
+  | 'GRADE_NOT_SUBMITTED'
+
 /** 오류 응답 (RFC 9457 ProblemDetail + code). 프론트는 code 로 경우를 나눈다 */
 export interface ProblemDetail {
   type?: string
@@ -41,7 +118,7 @@ export interface ProblemDetail {
   status: number
   detail?: string
   instance?: string
-  code?: string
+  code?: ErrorCode
 }
 
 /* ---------- 인증·사용자 (USR) ---------- */
@@ -72,18 +149,23 @@ export interface UserResponse {
   office: string | null
 }
 
+/**
+ * 계정 등록. usrNo 는 숫자만(학부생 8, 대학원생 10, 교수 6자리), role 은 STUDENT·PROFESSOR 만.
+ * yrLvl 은 학생이면 필수, stdStat 은 비우면 ATTENDING, office 는 교수만
+ */
 export interface UserCreateRequest {
   usrNo: string
   password: string
   usrNm: string
-  email: string | null
-  role: Role
+  email?: string | null
+  role: Exclude<Role, 'ADMIN'>
   deptNo: number
-  yrLvl: number | null
-  stdStat: StdStat | null
-  office: string | null
+  yrLvl?: number | null
+  stdStat?: StdStat | null
+  office?: string | null
 }
 
+/** 계정 수정. 학생이면 yrLvl·stdStat 필수, 역할에 맞지 않는 값은 서버가 무시 */
 export type UserUpdateRequest = Omit<UserCreateRequest, 'usrNo' | 'password' | 'role'>
 
 /* ---------- 학기·학사일정 (ACA-01) ---------- */
@@ -161,9 +243,10 @@ export interface PrerequisiteResponse {
   minReqGrd: MinGrade
 }
 
+/** minReqGrd 를 빼면 D- */
 export interface PrerequisiteRequest {
   prereqCrsCd: string
-  minReqGrd: MinGrade
+  minReqGrd?: MinGrade
 }
 
 export interface CourseResponse {
@@ -178,19 +261,27 @@ export interface CourseResponse {
   prerequisites: PrerequisiteResponse[]
 }
 
+/** 과목 등록. evalType 을 빼면 등급제(채플이면 P/F), rcmdYrLvl 을 빼면 권장학년 없음 */
 export interface CourseCreateRequest {
   crsCd: string
   crsNm: string
   deptNo: number
   crdt: number
   cmplType: CmplType
-  evalType: EvalType
-  rcmdYrLvl: number | null
-  prerequisites: PrerequisiteRequest[]
+  evalType?: EvalType
+  rcmdYrLvl?: number | null
+  prerequisites?: PrerequisiteRequest[]
 }
 
-/** 수정 때 evalType 은 필수, rcmdYrLvl 을 빼면 null 로 지워진다 */
-export type CourseUpdateRequest = Omit<CourseCreateRequest, 'crsCd' | 'prerequisites'>
+/** 수정(통째 교체). evalType 은 필수, rcmdYrLvl 을 빼면 null 로 지워지므로 현재 값을 채워 보낸다 */
+export interface CourseUpdateRequest {
+  crsNm: string
+  deptNo: number
+  crdt: number
+  cmplType: CmplType
+  evalType: EvalType
+  rcmdYrLvl: number | null
+}
 
 export interface CourseSearchParams {
   deptNo?: number
