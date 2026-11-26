@@ -4,7 +4,7 @@ import { Link, Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react
 import { authApi } from '../api'
 import { errorMessage } from '../api/client'
 import { homePath, isUndergraduate, useAuth } from '../auth/AuthContext'
-import { ROLE_LABEL, SCHD_TYPE_LABEL } from '../lib/format'
+import { ROLE_LABEL, SCHD_TYPE_LABEL, semLabel } from '../lib/format'
 import type { MyInfo, Role } from '../types'
 import { useToast } from './Toast'
 import { Field, Modal } from './ui'
@@ -106,6 +106,7 @@ export function AppLayout() {
           <div className="topbar-right">
             {isUndergraduate(user) && (
               <span className="period-chip">
+                {period?.semester && <>{semLabel(period.semester)} · </>}
                 <b>{period?.type ? `${SCHD_TYPE_LABEL[period.type]} 기간` : '신청 기간 아님'}</b>
               </span>
             )}

@@ -636,6 +636,8 @@ export type DemoScenario = 's1_grade_close' | 's2_enroll_day' | 's3_adjust'
 /** 학생 화면의 지금 기간. 신청 대상 학기의 학사일정과 서버 시각으로 정한다 */
 export interface CurrentPeriod {
   semNo: number
+  /** 신청 대상 학기의 연도·학기구분. 학기 목록을 못 받으면 없음 */
+  semester?: { yr: number; semType: SemType }
   type: 'CART' | 'ENROLL' | 'ADJUST' | null
   startDtm?: string
   endDtm?: string

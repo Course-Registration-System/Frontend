@@ -1,11 +1,17 @@
-import type { CurrentPeriod, ScheduleResponse } from '../types'
+import type { CurrentPeriod, ScheduleResponse, SemesterResponse } from '../types'
 
 /**
  * 학사일정과 서버 시각으로 지금 기간을 고른다 (버튼을 보여줄지 정하는 용도).
  * 시작 포함·종료 제외는 백엔드와 같다. 실제 허용 여부는 서버가 판단하고, 거절되면 사유를 그대로 보여준다.
  */
-export function pickPeriod(semNo: number, schedules: ScheduleResponse[], now: Date): CurrentPeriod {
+export function pickPeriod(
+  semNo: number,
+  schedules: ScheduleResponse[],
+  now: Date,
+  semesters: SemesterResponse[] = [],
+): CurrentPeriod {
   const t = now.getTime()
+  const sem = semesters.find((x) => x.semNo === semNo)
   const s = schedules.find(
     (x) =>
       x.schdType !== 'GRADE' &&
@@ -14,6 +20,7 @@ export function pickPeriod(semNo: number, schedules: ScheduleResponse[], now: Da
   )
   return {
     semNo,
+    semester: sem ? { yr: sem.yr, semType: sem.semType } : undefined,
     type: (s?.schdType as CurrentPeriod['type']) ?? null,
     startDtm: s?.startDtm,
     endDtm: s?.endDtm,

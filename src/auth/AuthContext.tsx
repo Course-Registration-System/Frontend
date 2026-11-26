@@ -24,11 +24,12 @@ async function loadPeriod(user: MyInfo): Promise<CurrentPeriod | null> {
   if (!isUndergraduate(user)) return null
   try {
     const { semNo } = await studentApi.cart()
-    const [schedules, health] = await Promise.all([
+    const [schedules, health, semesters] = await Promise.all([
       commonApi.schedules(semNo),
       commonApi.health().catch(() => null),
+      commonApi.semesters().catch(() => []),
     ])
-    return pickPeriod(semNo, schedules, health ? new Date(health.time) : new Date())
+    return pickPeriod(semNo, schedules, health ? new Date(health.time) : new Date(), semesters)
   } catch {
     return null
   }
