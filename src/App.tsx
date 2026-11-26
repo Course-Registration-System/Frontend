@@ -1,34 +1,85 @@
-import { useEffect, useState } from 'react'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
+import { AuthProvider } from './auth/AuthContext'
+import { AppLayout, RequireRole } from './components/Layout'
+import { ToastProvider } from './components/Toast'
+import LandingPage from './pages/LandingPage'
+import NotFoundPage from './pages/NotFoundPage'
+import TimetablePage from './pages/student/TimetablePage'
+import RegistrationPage from './pages/student/RegistrationPage'
+import GradesPage from './pages/student/GradesPage'
+import LectureListPage from './pages/teaching/LectureListPage'
+import LectureDetailLayout from './pages/teaching/LectureDetailLayout'
+import StudentsTab from './pages/teaching/StudentsTab'
+import SyllabusTab from './pages/teaching/SyllabusTab'
+import AssistantsTab from './pages/teaching/AssistantsTab'
+import GradesTab from './pages/teaching/GradesTab'
+import TeachingSearchPage from './pages/teaching/SearchPage'
+import DashboardPage from './pages/admin/DashboardPage'
+import UsersPage from './pages/admin/UsersPage'
+import SemestersPage from './pages/admin/SemestersPage'
+import CoursesPage from './pages/admin/CoursesPage'
+import LecturesPage from './pages/admin/LecturesPage'
+import AdminEnrollmentsPage from './pages/admin/EnrollmentsPage'
+import AdminGradesPage from './pages/admin/GradesPage'
 
-type Health = { status: string; time: string }
-
-function App() {
-  const [health, setHealth] = useState<Health | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    fetch('/api/health')
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data: Health) => setHealth(data))
-      .catch((err: Error) => setError(err.message))
-  }, [])
-
+export default function App() {
   return (
-    <main style={{ padding: '2rem' }}>
-      <h1>수강신청 및 성적 관리 시스템</h1>
-      <p>프론트엔드 초기 설정입니다.</p>
-      <section>
-        <h2>백엔드 연결 확인</h2>
-        {health && (
-          <p>
-            상태: {health.status} / 서버 시각: {health.time}
-          </p>
-        )}
-        {error && <p>연결 실패: {error} (백엔드가 8080 포트에서 실행 중인지 확인하세요)</p>}
-        {!health && !error && <p>확인 중...</p>}
-      </section>
-    </main>
+    <BrowserRouter>
+      <ToastProvider>
+        <AuthProvider>
+          <Routes>
+            {/* 랜딩 + 로그인. 로그인한 상태면 역할별 메인 화면으로 보낸다 */}
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/login" element={<Navigate to="/" replace />} />
+
+            {/* 장바구니·수강신청·시간표는 학부생만 (대학원생은 대상이 아님) */}
+            <Route element={<RequireRole roles={['STUDENT']} undergraduateOnly />}>
+              <Route element={<AppLayout />}>
+                <Route path="/student/registration" element={<RegistrationPage />} />
+                <Route path="/student/timetable" element={<TimetablePage />} />
+              </Route>
+            </Route>
+            <Route element={<RequireRole roles={['STUDENT']} />}>
+              <Route element={<AppLayout />}>
+                <Route path="/student/grades" element={<GradesPage />} />
+              </Route>
+            </Route>
+
+            {/* 교수, 그리고 배정된 강의가 있는 학생(조교) */}
+            <Route element={<RequireRole roles={['PROFESSOR']} allowAssistant />}>
+              <Route element={<AppLayout />}>
+                <Route path="/teaching/lectures" element={<LectureListPage />} />
+                <Route path="/teaching/lectures/:lecNo" element={<LectureDetailLayout />}>
+                  <Route index element={<Navigate to="students" replace />} />
+                  <Route path="students" element={<StudentsTab />} />
+                  <Route path="syllabus" element={<SyllabusTab />} />
+                  <Route path="assistants" element={<AssistantsTab />} />
+                  <Route path="grades" element={<GradesTab />} />
+                </Route>
+              </Route>
+            </Route>
+            <Route element={<RequireRole roles={['PROFESSOR']} />}>
+              <Route element={<AppLayout />}>
+                <Route path="/teaching/search" element={<TeachingSearchPage />} />
+              </Route>
+            </Route>
+
+            <Route element={<RequireRole roles={['ADMIN']} />}>
+              <Route element={<AppLayout />}>
+                <Route path="/admin" element={<DashboardPage />} />
+                <Route path="/admin/users" element={<UsersPage />} />
+                <Route path="/admin/semesters" element={<SemestersPage />} />
+                <Route path="/admin/courses" element={<CoursesPage />} />
+                <Route path="/admin/lectures" element={<LecturesPage />} />
+                <Route path="/admin/enrollments" element={<AdminEnrollmentsPage />} />
+                <Route path="/admin/grades" element={<AdminGradesPage />} />
+              </Route>
+            </Route>
+
+            <Route path="*" element={<NotFoundPage />} />
+          </Routes>
+        </AuthProvider>
+      </ToastProvider>
+    </BrowserRouter>
   )
 }
-
-export default App
