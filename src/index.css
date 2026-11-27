@@ -760,6 +760,113 @@ td > .badge:first-child,
   border-top: 1px solid var(--border);
 }
 
+/* ---------- 시연 진행자 패널 (?demo=1) ---------- */
+.demo {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.demo-fab {
+  height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--text);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+.demo-panel {
+  width: min(380px, calc(100vw - 32px));
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+.demo-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.demo-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.demo-now {
+  color: var(--muted);
+  font-size: 12px;
+}
+.demo-now b {
+  color: var(--primary);
+}
+.demo-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.demo-step {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.demo-step.here {
+  background: var(--primary-soft);
+}
+.demo-step-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+.demo-step-title small {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.demo-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.demo-account {
+  gap: 6px;
+}
+.demo-account small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.demo-account.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.demo-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
 /* ---------- 토스트 ---------- */
 .toasts {
   position: fixed;

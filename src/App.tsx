@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
 import { AuthProvider } from './auth/AuthContext'
+import { DemoPanel } from './components/DemoPanel'
 import { AppLayout, RequireRole } from './components/Layout'
 import { ToastProvider } from './components/Toast'
 import LandingPage from './pages/LandingPage'
@@ -78,6 +79,8 @@ export default function App() {
 
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
+          {/* 시연 진행자 패널 (?demo=1 일 때만) */}
+          <DemoPanel />
         </AuthProvider>
       </ToastProvider>
     </BrowserRouter>
