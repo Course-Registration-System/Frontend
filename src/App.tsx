@@ -14,7 +14,6 @@ import StudentsTab from './pages/teaching/StudentsTab'
 import SyllabusTab from './pages/teaching/SyllabusTab'
 import AssistantsTab from './pages/teaching/AssistantsTab'
 import GradesTab from './pages/teaching/GradesTab'
-import TeachingSearchPage from './pages/teaching/SearchPage'
 import DashboardPage from './pages/admin/DashboardPage'
 import UsersPage from './pages/admin/UsersPage'
 import SemestersPage from './pages/admin/SemestersPage'
@@ -57,11 +56,6 @@ export default function App() {
                   <Route path="assistants" element={<AssistantsTab />} />
                   <Route path="grades" element={<GradesTab />} />
                 </Route>
-              </Route>
-            </Route>
-            <Route element={<RequireRole roles={['PROFESSOR']} />}>
-              <Route element={<AppLayout />}>
-                <Route path="/teaching/search" element={<TeachingSearchPage />} />
               </Route>
             </Route>
 
