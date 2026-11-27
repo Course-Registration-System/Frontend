@@ -24,11 +24,21 @@ async function loadPeriod(user: MyInfo): Promise<CurrentPeriod | null> {
   if (!isUndergraduate(user)) return null
   try {
     const { semNo } = await studentApi.cart()
-    const [schedules, health] = await Promise.all([
+    const [schedules, health, semesters] = await Promise.all([
       commonApi.schedules(semNo),
       commonApi.health().catch(() => null),
+      commonApi.semesters().catch(() => []),
     ])
-    return pickPeriod(semNo, schedules, health ? new Date(health.time) : new Date())
+    // 현재 학기가 신청 대상 학기와 다르면 그 학기 일정도 받아 성적입력 기간인지 본다
+    const cur = semesters.find((x) => x.current && x.semNo !== semNo)
+    const currentSchedules = cur ? await commonApi.schedules(cur.semNo).catch(() => []) : []
+    return pickPeriod(
+      semNo,
+      schedules,
+      health ? new Date(health.time) : new Date(),
+      semesters,
+      currentSchedules,
+    )
   } catch {
     return null
   }
