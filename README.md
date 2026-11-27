@@ -2,6 +2,10 @@
 
 수강신청 및 성적 관리 시스템 Frontend
 
+<p align="center">
+  <img src="captures/student/01-수강신청.png" alt="학생 장바구니·수강신청 화면" width="900">
+</p>
+
 ## 기술 스택
 
 | 구분 | 내용 |
