@@ -4,11 +4,11 @@ import { authApi, commonApi, studentApi } from '../api'
 import { AUTH_EXPIRED_EVENT, tokenStore } from '../api/client'
 import { isGraduateNo } from '../lib/format'
 import { pickPeriod } from '../lib/period'
-import type { CurrentPeriod, MyInfo } from '../types'
+import type { CurrentPeriod, MyInfo, SemesterResponse } from '../types'
 
 interface AuthValue {
   user: MyInfo | null
-  /** 학생: 신청 대상 학기와 지금 기간 (신청 대상 학기가 없으면 null) */
+  /** 신청 대상 학기와 지금 기간 (모든 역할, 학기가 없으면 null). 학생 화면 버튼 판단에도 쓴다 */
   period: CurrentPeriod | null
   loading: boolean
   login: (usrNo: string, password: string) => Promise<MyInfo>
@@ -18,17 +18,32 @@ interface AuthValue {
 
 const AuthContext = createContext<AuthValue | null>(null)
 
-/** 장바구니 응답의 semNo 가 신청 대상 학기다. 그 학기 일정과 서버 시각으로 기간을 고른다 */
+/** 현재 학기 다음 학기 (없으면 현재 학기, 그것도 없으면 마지막 학기). 학기 목록은 오래된 순이다 */
+function nextSemesterNo(semesters: SemesterResponse[]) {
+  const i = semesters.findIndex((x) => x.current)
+  return (semesters[i + 1] ?? semesters[i] ?? semesters[semesters.length - 1])?.semNo
+}
+
+/**
+ * 신청 대상 학기와 그 학기 일정, 서버 시각으로 지금 기간을 고른다.
+ * 학부생은 장바구니 응답의 semNo 가 신청 대상 학기다.
+ * 교수·관리자·대학원생은 장바구니를 못 보므로(403) 현재 학기의 다음 학기를 신청 대상으로 본다.
+ */
 async function loadPeriod(user: MyInfo): Promise<CurrentPeriod | null> {
-  // 대학원생은 장바구니·수강신청 대상이 아니다 (장바구니 조회가 403)
-  if (!isUndergraduate(user)) return null
   try {
-    const { semNo } = await studentApi.cart()
-    const [schedules, health, semesters] = await Promise.all([
-      commonApi.schedules(semNo),
+    const [cartSemNo, health, semesters] = await Promise.all([
+      isUndergraduate(user)
+        ? studentApi
+            .cart()
+            .then((c) => c.semNo)
+            .catch(() => null)
+        : null,
       commonApi.health().catch(() => null),
       commonApi.semesters().catch(() => []),
     ])
+    const semNo = cartSemNo ?? nextSemesterNo(semesters)
+    if (semNo == null) return null
+    const schedules = await commonApi.schedules(semNo)
     // 현재 학기가 신청 대상 학기와 다르면 그 학기 일정도 받아 성적입력 기간인지 본다
     const cur = semesters.find((x) => x.current && x.semNo !== semNo)
     const currentSchedules = cur ? await commonApi.schedules(cur.semNo).catch(() => []) : []

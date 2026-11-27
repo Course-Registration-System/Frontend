@@ -103,13 +103,13 @@ export function AppLayout() {
             ))}
           </nav>
           <div className="topbar-right">
-            {isUndergraduate(user) && (
+            {period && (
               <span className="period-chip">
-                {period?.semester && <>{semLabel(period.semester)} · </>}
-                <b>{period?.type ? `${SCHD_TYPE_LABEL[period.type]} 기간` : '신청 기간 아님'}</b>
+                {period.semester && <>{semLabel(period.semester)} · </>}
+                <b>{period.type ? `${SCHD_TYPE_LABEL[period.type]} 기간` : '신청 기간 아님'}</b>
               </span>
             )}
-            {isUndergraduate(user) && period?.gradeSemester && (
+            {period?.gradeSemester && (
               <span className="period-chip">
                 {semLabel(period.gradeSemester)} · <b>{SCHD_TYPE_LABEL.GRADE} 기간</b>
               </span>
