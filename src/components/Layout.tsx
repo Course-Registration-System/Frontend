@@ -37,9 +37,7 @@ function menuFor(user: MyInfo): MenuGroup[] {
     ]
 
   if (user.role === 'PROFESSOR')
-    return [
-      { title: '담당 강의', items: [{ to: '/teaching/lectures', label: '담당 강의' }] },
-    ]
+    return [{ title: '담당 강의', items: [{ to: '/teaching/lectures', label: '담당 강의' }] }]
 
   // 학생 (조교 포함). 대학원생은 장바구니·수강신청 대상이 아니라 수강신청 메뉴를 빼고 강의 운영을 앞에 둔다.
   // 학적상태로 신청할 수 없는 학부생은 서버가 막는다
