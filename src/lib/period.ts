@@ -9,18 +9,22 @@ export function pickPeriod(
   schedules: ScheduleResponse[],
   now: Date,
   semesters: SemesterResponse[] = [],
+  currentSchedules: ScheduleResponse[] = [],
 ): CurrentPeriod {
   const t = now.getTime()
+  const inRange = (x: ScheduleResponse) =>
+    new Date(x.startDtm).getTime() <= t && t < new Date(x.endDtm).getTime()
   const sem = semesters.find((x) => x.semNo === semNo)
-  const s = schedules.find(
-    (x) =>
-      x.schdType !== 'GRADE' &&
-      new Date(x.startDtm).getTime() <= t &&
-      t < new Date(x.endDtm).getTime(),
-  )
+  const s = schedules.find((x) => x.schdType !== 'GRADE' && inRange(x))
+  // 현재 학기(신청 대상 학기와 다를 때)의 성적입력 기간도 함께 알려 준다
+  const cur = semesters.find((x) => x.current && x.semNo !== semNo)
+  const grading =
+    cur &&
+    currentSchedules.some((x) => x.semNo === cur.semNo && x.schdType === 'GRADE' && inRange(x))
   return {
     semNo,
     semester: sem ? { yr: sem.yr, semType: sem.semType } : undefined,
+    gradeSemester: grading ? { yr: cur.yr, semType: cur.semType } : undefined,
     type: (s?.schdType as CurrentPeriod['type']) ?? null,
     startDtm: s?.startDtm,
     endDtm: s?.endDtm,

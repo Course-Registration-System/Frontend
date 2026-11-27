@@ -638,6 +638,8 @@ export interface CurrentPeriod {
   semNo: number
   /** 신청 대상 학기의 연도·학기구분. 학기 목록을 못 받으면 없음 */
   semester?: { yr: number; semType: SemType }
+  /** 현재 학기가 성적입력 기간이면 그 학기 (신청 대상 학기와 다를 때만). 학생은 참고로만 본다 */
+  gradeSemester?: { yr: number; semType: SemType }
   type: 'CART' | 'ENROLL' | 'ADJUST' | null
   startDtm?: string
   endDtm?: string
