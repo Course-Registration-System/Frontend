@@ -7,7 +7,7 @@ import { LectureSearch, LectureTable } from '../../components/LectureSearch'
 import { useToast } from '../../components/Toast'
 import { Badge, Empty, ErrorBox, Loading, Notice, PageHeader, Stat } from '../../components/ui'
 import { useAsync } from '../../hooks/useAsync'
-import { formatDateTime, SCHD_TYPE_LABEL } from '../../lib/format'
+import { formatDateTime, SCHD_TYPE_LABEL, semLabel } from '../../lib/format'
 import { studentActions } from '../../lib/period'
 
 type Tab = 'CART' | 'ENROLLED'
@@ -57,8 +57,12 @@ export default function RegistrationPage() {
       <Notice>
         {period?.type ? (
           <>
-            지금은 <b>{SCHD_TYPE_LABEL[period.type]} 기간</b>입니다 (
-            {formatDateTime(period.startDtm)} ~ {formatDateTime(period.endDtm)}).
+            지금은{' '}
+            <b>
+              {period.semester && `${semLabel(period.semester)} `}
+              {SCHD_TYPE_LABEL[period.type]} 기간
+            </b>
+            입니다 ({formatDateTime(period.startDtm)} ~ {formatDateTime(period.endDtm)}).
           </>
         ) : (
           '지금은 장바구니·수강신청 기간이 아니라 조회만 할 수 있습니다.'
