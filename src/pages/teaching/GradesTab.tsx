@@ -22,7 +22,7 @@ const SCORE_FIELDS: [ScoreKey, string][] = [
 export default function GradesTab() {
   const { lecNo } = useDetail()
   const toast = useToast()
-  const { data, error, loading, reload, setData } = useAsync(
+  const { data, error, errorCode, loading, reload, setData } = useAsync(
     () => teachingApi.gradeSheet(lecNo),
     [lecNo],
   )
@@ -31,6 +31,9 @@ export default function GradesTab() {
   const [busy, setBusy] = useState(false)
   const dirty = Object.keys(edits).length > 0
 
+  // 수강생 명단과 같은 기준: 신청(정정) 기간이 끝나기 전에는 성적표도 열지 않는다
+  if (errorCode === 'ROSTER_NOT_OPEN')
+    return <Notice>수강신청·정정 기간이 끝난 뒤에 성적을 입력할 수 있습니다.</Notice>
   if (error) return <ErrorBox message={error} onRetry={reload} />
   if (loading && !data) return <Loading />
   if (!data) return null
